@@ -1,0 +1,8 @@
+{
+  "P1.price": {"v": 182.50, "unit": "USD", "asof": "2026-07-03T20:00:00Z", "src": "stock-market-pro"},
+  "P1.chg_pct": {"v": 1.8, "unit": "%", "asof": "2026-07-03T20:00:00Z", "src": "stock-market-pro"},
+  "P2.atr14": {"v": 4.35, "unit": "USD", "asof": "2026-07-03T20:00:00Z", "src": "stock-market-pro"},
+  "P2.rsi14": {"v": 61.0, "unit": "idx", "asof": "2026-07-03T20:00:00Z", "src": "stock-market-pro"},
+  "P3.rev_yoy": {"v": 28.4, "unit": "%", "asof": "2026-03-31", "src": "stock-market-pro"},
+  "P4.iv_rank": {"v": 45.0, "unit": "pctile", "asof": "2026-07-03T20:00:00Z", "src": "stock-market-pro"}
+}

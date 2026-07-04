@@ -1,0 +1,8 @@
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Run artifacts — contain LIVE ACCOUNT DATA (positions, $ amounts) + reports. Never commit.
+runs/

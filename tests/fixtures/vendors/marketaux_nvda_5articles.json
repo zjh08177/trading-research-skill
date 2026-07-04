@@ -1,0 +1,42 @@
+{
+  "data": [
+    {
+      "title": "NVDA mid-week wrap",
+      "source": "wireA",
+      "published_at": "2026-06-27T14:00:00.000000Z",
+      "url": "https://example.com/a1",
+      "entities": [
+        {"symbol": "AAPL", "sentiment_score": -0.8},
+        {"symbol": "nvda", "sentiment_score": 0.42}
+      ]
+    },
+    {
+      "title": "Chips rally on export news",
+      "source": "wireB",
+      "published_at": "2026-06-29T09:30:00.000000Z",
+      "url": "https://example.com/a2",
+      "entities": [{"symbol": "NVDA", "sentiment_score": 0.1}]
+    },
+    {
+      "title": "Sector overview, no ticker calls",
+      "source": "wireC",
+      "published_at": "2026-06-25T08:00:00.000000Z",
+      "url": "https://example.com/a3",
+      "entities": []
+    },
+    {
+      "title": "NVDA supplier note",
+      "source": "wireD",
+      "published_at": "2026-06-28T11:15:00.000000Z",
+      "url": "https://example.com/a4",
+      "entities": [{"symbol": "NVDA", "sentiment_score": null}]
+    },
+    {
+      "title": "Datacenter capex preview",
+      "source": "wireE",
+      "published_at": "2026-06-26T16:45:00.000000Z",
+      "url": "https://example.com/a5",
+      "entities": [{"symbol": "NVDA", "sentiment_score": -0.15}]
+    }
+  ]
+}
