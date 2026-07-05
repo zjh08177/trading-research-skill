@@ -14,7 +14,9 @@ import sys
 CHECK_SECTIONS = ("rating", "thesis", "risk", "position")
 TAG = r"\[[PH]\d+\.[A-Za-z0-9_]+\]"
 PAIR_RE = re.compile(
-    r"([~≈])?\s*(?<![A-Za-z0-9.\-])(-?\$?-?\d[\d,]*(?:\.\d+)?)\s*%?\s*\[([PH]\d+)\.([A-Za-z0-9_]+)\]")
+    r"([~≈])?\s*(?<![A-Za-z0-9.\-])(-?\$?-?\d[\d,]*(?:\.\d+)?)\s*(%)?\s*\[([PH]\d+)\.([A-Za-z0-9_]+)\]")
+DERIVED_RE = re.compile(
+    r"derived\s*\(\s*([PH]\d+\.[A-Za-z0-9_]+)\s*([x×*/])\s*([PH]\d+\.[A-Za-z0-9_]+)\s*\)")
 TAG_RE = re.compile(TAG)
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 NUM_RE = re.compile(r"(?<![A-Za-z0-9.])~?\$?-?\d[\d,]*(?:\.\d+)?%?")
@@ -31,40 +33,130 @@ def check_pairs(text, pack):
     results = []
     for m in PAIR_RE.finditer(text):
         approx = bool(m.group(1))
-        num = to_float(m.group(2))
-        fact_id = f"{m.group(3)}.{m.group(4)}"  # group 3 carries the prefix (P2 / H1)
+        try:
+            num = to_float(m.group(2))
+        except ValueError:
+            continue  # a malformed token (e.g. '--5') the regex over-captured
+        has_pct = bool(m.group(3))
+        fact_id = f"{m.group(4)}.{m.group(5)}"  # group 4 carries the prefix (P2 / H1)
         if fact_id not in pack:
             results.append((False, f"FAIL {fact_id}: tag has no pack entry"))
             continue
-        if isinstance(pack[fact_id]["v"], str):
+        fv = pack[fact_id]["v"]
+        if fv is None:
+            continue  # fact carries no value: not a numeric claim
+        if isinstance(fv, str):
             continue  # dates/labels: not a numeric claim
-        if isinstance(pack[fact_id]["v"], (list, dict)):
+        if isinstance(fv, (list, dict)):
             results.append((False, f"FAIL {fact_id}: non-scalar fact numerically "
                                    f"tagged (context-only, cite without a number)"))
             continue
-        v = float(pack[fact_id]["v"])
+        v = float(fv)
+        # Unit-aware: a %-suffixed cite of a unit:ratio fact is stated as a percent
+        # (109.1% == ratio 1.091) — compare num/100. Fixes the P4.atm_iv_near trap.
+        cmp = num / 100 if has_pct and pack[fact_id].get("unit") == "ratio" else num
         tol = 0.05 if approx else 0.005
-        rel = abs(num - v) / abs(v) if v else abs(num - v)
+        rel = abs(cmp - v) / abs(v) if v else abs(cmp - v)
         if rel <= tol:
-            results.append((True, f"PASS {fact_id}: {num} matches {v}"))
+            results.append((True, f"PASS {fact_id}: {num}{'%' if has_pct else ''} matches {v}"))
         else:
-            results.append((False, f"FAIL {fact_id}: report {num} vs pack {v} "
-                                   f"(rel {rel:.2%} > {tol:.1%})"))
+            results.append((False, f"FAIL {fact_id}: report {num}{'%' if has_pct else ''} "
+                                   f"vs pack {v} (rel {rel:.2%} > {tol:.1%})"))
     return results
+
+
+def recompute_derived(pack):
+    """Recompute each fact whose `src` self-declares `derived (A op B)` from its
+    constituents and compare to the stored `v` (0.5%). Catches internally
+    inconsistent derived numbers a stored-value match would miss. Hard-fail when
+    both constituents are present scalars; warn (never fail) when one is missing
+    or non-scalar. Only `derived (...)`-tagged facts are touched — schwab-native
+    ratios/percents (e.g. P2.atr14_pct) are base-ambiguous and left alone.
+    Returns (results, warnings)."""
+    results, warnings = [], []
+
+    def scalar(fid):
+        f = pack.get(fid)
+        if not isinstance(f, dict):
+            return None
+        val = f.get("v")
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return None
+        return float(val)
+
+    for fid, fact in pack.items():
+        if not isinstance(fact, dict):
+            continue
+        m = DERIVED_RE.search(str(fact.get("src", "")))
+        if not m:
+            continue
+        v = scalar(fid)
+        if v is None:
+            continue
+        a, op, b = scalar(m.group(1)), m.group(2), scalar(m.group(3))
+        if a is None or b is None or (op == "/" and b == 0):
+            warnings.append(f"derived {fid}: cannot recompute "
+                            f"({m.group(1)} {op} {m.group(3)} — missing/non-scalar constituent)")
+            continue
+        rec = a * b if op in "x×*" else a / b
+        rel = abs(rec - v) / abs(v) if v else abs(rec - v)
+        if rel <= 0.005:
+            results.append((True, f"PASS derived {fid}: {v:g} ≈ {m.group(1)}{op}{m.group(3)}"))
+        else:
+            results.append((False, f"FAIL derived {fid}: stored {v:g} vs recomputed "
+                                   f"{rec:g} from {m.group(1)}{op}{m.group(3)} (rel {rel:.2%})"))
+    return results, warnings
+
+
+# Verbatim regions whose numbers are script-computed and intentionally untagged.
+# (start-substring, end-line-predicate). An UNTERMINATED start is NOT exempted —
+# fail-safe: a truncated block must never swallow (hide) the rest of the report.
+RATING_BLOCK = ("rating-block: inserted verbatim",
+                lambda ln: ln.strip().startswith("_Actual N:"))
+RISKBOX_BLOCK = ("riskbox-block: inserted verbatim",
+                 lambda ln: "riskbox-block: end" in ln)
+
+
+def _block_line_indices(lines, blocks):
+    """Set of line indices inside WELL-FORMED (matched start...end) verbatim
+    blocks. A start with no matching end contributes nothing (fail-safe)."""
+    exempt = set()
+    for start_key, end_pred in blocks:
+        i, n = 0, len(lines)
+        while i < n:
+            if start_key in lines[i]:
+                j = i + 1
+                while j < n and not end_pred(lines[j]):
+                    j += 1
+                if j < n:                       # found the end
+                    exempt.update(range(i, j + 1))
+                    i = j + 1
+                    continue
+            i += 1
+    return exempt
+
+
+def strip_riskbox(text):
+    """Drop only well-formed verbatim risk-box regions (risk_box.py output). Its
+    derived numbers carry no tag by design and are correct by construction —
+    exempt from the cite check. An unterminated block is left in (fail-safe)."""
+    lines = text.splitlines()
+    exempt = _block_line_indices(lines, [RISKBOX_BLOCK])
+    return "\n".join(ln for k, ln in enumerate(lines) if k not in exempt)
 
 
 def scan_untagged(text, sections=CHECK_SECTIONS):
     """Flag numbers lacking a [P#.fact] tag inside judgment sections, unless
-    the line carries a URL. Returns list of warning strings (non-fatal)."""
+    the line carries a URL. Returns list of warning strings (non-fatal). Skips
+    the well-formed verbatim regions (rating block, risk box) whose numbers are
+    script-computed and intentionally untagged; an unterminated block is still
+    scanned (fail-safe)."""
     warnings = []
-    section_on = in_block = False
-    for line in text.splitlines():
-        if "rating-block: inserted verbatim" in line:
-            in_block = True
-            continue
-        if in_block:
-            if line.strip().startswith("_Actual N:"):
-                in_block = False
+    lines = text.splitlines()
+    exempt = _block_line_indices(lines, [RATING_BLOCK, RISKBOX_BLOCK])
+    section_on = False
+    for idx, line in enumerate(lines):
+        if idx in exempt:
             continue
         h = re.match(r"#{1,6}\s+(.*)", line)
         if h:
@@ -98,8 +190,10 @@ def main(argv=None):
             pack = {**pack, **json.load(f)}  # position facts (15-position.json): a 2nd tag source
     # An absent position file is normal (flat / back-dated / auth-fail runs write none):
     # skip the merge, never crash — a stray [H#] tag then fails as "no pack entry".
-    results = check_pairs(report, pack)
-    warnings = scan_untagged(report)
+    results = check_pairs(strip_riskbox(report), pack)
+    dresults, dwarnings = recompute_derived(pack)
+    results += dresults
+    warnings = scan_untagged(report) + dwarnings
     hard = [msg for ok, msg in results if not ok]
     out = ["== QA CITE CHECK =="]
     out += [("  " if ok else "! ") + msg for ok, msg in results]

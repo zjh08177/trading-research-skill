@@ -79,6 +79,38 @@ def test_cli_tally_writes_block_and_json(tmp_path):
     assert json.loads(r.stderr.strip())["decision"] == "publish"
 
 
+# ---------- ensemble: median-notch (#8) ----------
+
+def test_render_includes_central_tendency(tmp_path):
+    """Block shows a median + mean notch line beside the mode headline."""
+    _votes(tmp_path, [("Buy", 7), ("Buy", 6), ("Hold", 5)])
+    block, dec = ensemble.render(*ensemble.collect(tmp_path), 3)
+    assert "Central tendency:" in block
+    assert "median" in block and "mean" in block
+    assert dec["median_notch"] == 4.0        # median of [4,4,3]
+    assert dec["mean_notch"] == round((4 + 4 + 3) / 3, 1)
+
+
+def test_mode_headline_byte_identical(tmp_path):
+    """Adding central tendency must not alter the mode headline line."""
+    _votes(tmp_path, [("Buy", 7), ("Buy", 6), ("Hold", 5)])
+    block, _ = ensemble.render(*ensemble.collect(tmp_path), 3)
+    assert "### Ensemble Rating: **Buy**" in block
+    # the median/mean must live on their OWN line, never in the headline
+    head = [ln for ln in block.splitlines() if ln.startswith("### Ensemble Rating:")][0]
+    assert "median" not in head and "mean" not in head
+
+
+def test_unanimous_all_aggregates_equal_mode(tmp_path):
+    """Unanimous ensemble → median label == mean == mode."""
+    _votes(tmp_path, [("Buy", 7), ("Buy", 6), ("Buy", 8)])
+    block, dec = ensemble.render(*ensemble.collect(tmp_path), 3)
+    assert dec["mode_label"] == "Buy"
+    assert dec["median_notch"] == 4.0 and dec["mean_notch"] == 4.0
+    ct = [ln for ln in block.splitlines() if ln.startswith("Central tendency:")][0]
+    assert "mode Buy" in ct and "median Buy" in ct
+
+
 # ---------- ledger ----------
 
 def test_read_before_excludes_same_day(tmp_path):
@@ -143,6 +175,142 @@ def test_append_write_failure_prints_row_exits_2(tmp_path):
     assert '"run_id": "x"' in r.stdout      # the row is printed for recovery
 
 
+# ---------- ledger: resolve loop + calibration (#7) ----------
+
+def test_add_trading_days_skips_weekends():
+    import ledger
+    from datetime import date
+    # 2026-07-01 is a Wednesday; +2 td = Fri 07-03; +3 td = Mon 07-06 (weekend skipped)
+    assert ledger.add_trading_days(date(2026, 7, 1), 2) == date(2026, 7, 3)
+    assert ledger.add_trading_days(date(2026, 7, 1), 3) == date(2026, 7, 6)
+
+
+def test_resolve_rows_computes_alpha_and_hit():
+    import ledger
+    from datetime import date
+    prices = {("AAOI", "2026-06-01"): 100.0, ("AAOI", "2026-06-08"): 110.0,
+              ("SPY", "2026-06-01"): 100.0, ("SPY", "2026-06-08"): 105.0}
+    rows = [{"run_id": "r1", "ticker": "AAOI", "date_utc": "2026-06-01",
+             "mode_rating": "Buy", "no_call": False}]
+    out, skipped = ledger.resolve_rows(rows, set(), "AAOI", 5, "SPY", date(2026, 7, 1),
+                                       lambda s, d: prices.get((s, d)))
+    assert len(out) == 1 and skipped == 0
+    row = out[0]
+    assert row["resolution_date"] == "2026-06-08"        # +5 td from Mon 06-01
+    assert abs(row["realized_return"] - 0.10) < 1e-9
+    assert abs(row["alpha"] - 0.05) < 1e-9               # 10% - 5%
+    assert row["direction"] == 1 and row["hit"] is True
+
+
+def test_resolve_rows_short_call_hit_on_negative_alpha():
+    import ledger
+    from datetime import date
+    prices = {("X", "2026-06-01"): 100.0, ("X", "2026-06-08"): 90.0,
+              ("SPY", "2026-06-01"): 100.0, ("SPY", "2026-06-08"): 100.0}
+    rows = [{"run_id": "s1", "ticker": "X", "date_utc": "2026-06-01",
+             "mode_rating": "Sell", "no_call": False}]
+    out, _ = ledger.resolve_rows(rows, set(), "X", 5, "SPY", date(2026, 7, 1),
+                                 lambda s, d: prices.get((s, d)))
+    assert out[0]["direction"] == -1 and out[0]["hit"] is True   # -10% alpha, short → hit
+
+
+def test_resolve_rows_skips_unaged_and_resolved_and_hold():
+    import ledger
+    from datetime import date
+    pf = lambda s, d: 100.0
+    base = {"ticker": "AAOI", "date_utc": "2026-06-25", "no_call": False}
+    rows = [
+        {**base, "run_id": "recent", "mode_rating": "Buy"},          # unaged
+        {**base, "run_id": "done", "date_utc": "2026-06-01", "mode_rating": "Buy"},  # resolved
+        {**base, "run_id": "hold", "date_utc": "2026-06-01", "mode_rating": "Hold"}, # no direction
+    ]
+    out, skipped = ledger.resolve_rows(rows, {"done"}, "AAOI", 5, "SPY", date(2026, 6, 30), pf)
+    assert out == [] and skipped == 0   # recent: unaged; done: resolved; hold: excluded
+
+
+def test_resolve_rows_counts_missing_price_skips():
+    """A settled directional call whose price can't be fetched → skipped count,
+    not a silent forever-omission."""
+    import ledger
+    from datetime import date
+    rows = [{"run_id": "gap", "ticker": "DEAD", "date_utc": "2026-06-01",
+             "mode_rating": "Buy", "no_call": False}]
+    out, skipped = ledger.resolve_rows(rows, set(), "DEAD", 5, "SPY",
+                                       date(2026, 7, 1), lambda s, d: None)
+    assert out == [] and skipped == 1
+
+
+def test_read_skips_malformed_sidecar_line_keeps_table(tmp_path):
+    """A corrupt sidecar line must NOT crash read or discard the valid table."""
+    led = tmp_path / "ledger.jsonl"
+    led.write_text(json.dumps({"run_id": "r1", "ticker": "AAOI",
+                               "date_utc": "2026-06-01", "mode_rating": "Buy",
+                               "spread": 0, "no_call": False, "report_path": "a.md"}) + "\n")
+    side = tmp_path / "ledger-resolved.jsonl"
+    side.write_text('not valid json {{{\n' +
+                    json.dumps({"run_id": "r1", "ticker": "AAOI",
+                                "date_utc": "2026-06-01", "resolution_date": "2026-06-29",
+                                "alpha": 0.05, "direction": 1, "hit": True}) + "\n")
+    r = _run("ledger.py", "--ledger", str(led), "read", "--ticker", "AAOI",
+             "--before", "2026-07-05")
+    assert r.returncode == 0
+    assert "2026-06-01" in r.stdout            # valid table still printed
+    assert "Resolved calls (N=1)" in r.stdout  # aggregate from the good line
+    assert "skip" in r.stderr.lower() or "malformed" in r.stderr.lower()
+
+
+def test_read_malformed_main_ledger_line_no_crash(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    led.write_text('garbage not json\n' +
+                   json.dumps({"run_id": "r1", "ticker": "AAOI",
+                               "date_utc": "2026-06-01", "mode_rating": "Buy",
+                               "spread": 0, "no_call": False, "report_path": "a.md"}) + "\n")
+    r = _run("ledger.py", "--ledger", str(led), "read", "--ticker", "AAOI",
+             "--before", "2026-07-05")
+    assert r.returncode == 0 and "2026-06-01" in r.stdout
+
+
+def test_read_appends_calibration_from_sidecar(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    led.write_text(json.dumps({"run_id": "r1", "ticker": "AAOI",
+                               "date_utc": "2026-06-01", "mode_rating": "Buy",
+                               "spread": 0, "no_call": False, "report_path": "a.md"}) + "\n")
+    side = tmp_path / "ledger-resolved.jsonl"
+    side.write_text(json.dumps({"run_id": "r1", "ticker": "AAOI",
+                                "date_utc": "2026-06-01", "resolution_date": "2026-06-29",
+                                "alpha": 0.05, "direction": 1, "hit": True}) + "\n")
+    r = _run("ledger.py", "--ledger", str(led), "read", "--ticker", "AAOI",
+             "--before", "2026-07-05")
+    assert "Resolved calls (N=1)" in r.stdout and "hit-rate" in r.stdout
+
+
+def test_read_calibration_lookahead_excludes_same_or_future_resolution(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    led.write_text(json.dumps({"run_id": "r1", "ticker": "AAOI",
+                               "date_utc": "2026-06-01", "mode_rating": "Buy",
+                               "spread": 0, "no_call": False, "report_path": "a.md"}) + "\n")
+    side = tmp_path / "ledger-resolved.jsonl"
+    # resolution_date == before → must be excluded (strict look-ahead guard)
+    side.write_text(json.dumps({"run_id": "r1", "ticker": "AAOI",
+                                "date_utc": "2026-06-01", "resolution_date": "2026-07-05",
+                                "alpha": 0.05, "direction": 1, "hit": True}) + "\n")
+    r = _run("ledger.py", "--ledger", str(led), "read", "--ticker", "AAOI",
+             "--before", "2026-07-05")
+    assert "Resolved calls" not in r.stdout
+
+
+def test_resolve_cli_no_aged_rows_is_clean(tmp_path):
+    """CLI resolve on only-recent rows resolves 0 (no price fetch needed) — honest."""
+    led = tmp_path / "ledger.jsonl"
+    led.write_text(json.dumps({"run_id": "r1", "ticker": "AAOI",
+                               "date_utc": "2026-07-04", "mode_rating": "Buy",
+                               "spread": 0, "no_call": False, "report_path": "a.md"}) + "\n")
+    r = _run("ledger.py", "--ledger", str(led), "resolve", "--ticker", "AAOI",
+             "--asof", "2026-07-05")
+    assert r.returncode == 0 and "0 resolved" in r.stdout
+    assert not (tmp_path / "ledger-resolved.jsonl").exists()  # nothing written
+
+
 # ---------- qa_check ----------
 
 PACK = {"P2.atr14": {"v": 19.86}, "P3.margin": {"v": 42.5}}
@@ -191,6 +359,119 @@ def test_approx_tolerance(tmp_path):
     rb.write_text("## Risk\nATR ~20 [P2.atr14].\n")
     approx = _run("qa_check.py", str(rb), str(pa))
     assert approx.returncode == 0                 # 0.70% <= 5% approx
+
+
+# ---------- risk_box (#1) ----------
+
+RISK_PACK = {
+    "P1.last": {"v": 244.42, "unit": "USD", "src": "schwab"},
+    "P1.price": {"v": 241.91, "unit": "USD", "src": "schwab"},
+    "P1.chg_pct_1d": {"v": -6.63, "unit": "pct", "src": "schwab"},
+    "P2.atr14": {"v": 27.46, "unit": "USD", "src": "schwab"},
+    "P2.atr14_pct": {"v": 11.35, "unit": "pct", "src": "schwab"},
+    "P2.sigma30": {"v": 6.69, "unit": "pct", "src": "schwab"},
+    "P2.sma50": {"v": 217.35, "unit": "USD", "src": "schwab"},
+}
+
+
+def _pack(tmp, pack):
+    p = tmp / "10-datapack.json"
+    p.write_text(json.dumps(pack))
+    return p
+
+
+def test_risk_box_emits_sentinel_block(tmp_path):
+    r = _run("risk_box.py", str(_pack(tmp_path, RISK_PACK)))
+    assert r.returncode == 0, r.stderr
+    assert "riskbox-block: inserted verbatim" in r.stdout
+    assert "riskbox-block: end" in r.stdout
+    for tag in ("[P1.chg_pct_1d]", "[P2.atr14]", "[P2.sigma30]", "[P2.sma50]"):
+        assert tag in r.stdout, tag
+    assert "Context:" in r.stdout
+
+
+def test_risk_box_today_move_in_atr(tmp_path):
+    """6.63% move / 11.35% ATR = 0.58x ATR, sub-ATR → NORMAL context."""
+    r = _run("risk_box.py", str(_pack(tmp_path, RISK_PACK)))
+    assert "0.58" in r.stdout          # move/ATR ratio
+    assert "NORMAL" in r.stdout and "ABNORMAL" not in r.stdout
+
+
+def test_risk_box_abnormal_on_large_move(tmp_path):
+    pack = {**RISK_PACK, "P1.chg_pct_1d": {"v": -20.0, "unit": "pct", "src": "schwab"}}
+    r = _run("risk_box.py", str(_pack(tmp_path, pack)))
+    assert "ABNORMAL" in r.stdout      # 20/11.35 = 1.76x >= 1.5x threshold
+
+
+def test_risk_box_invalidation_anchor(tmp_path):
+    """SMA50 217.35 − 1x ATR14 27.46 = 189.89 long-invalidation level."""
+    r = _run("risk_box.py", str(_pack(tmp_path, RISK_PACK)))
+    assert "189.89" in r.stdout
+
+
+def test_risk_box_datagap_context_unknown(tmp_path):
+    """chg absent → honest DATA GAP + Context UNKNOWN (not a false NORMAL)."""
+    pack = {k: v for k, v in RISK_PACK.items() if k != "P1.chg_pct_1d"}
+    r = _run("risk_box.py", str(_pack(tmp_path, pack)))
+    assert r.returncode == 0
+    assert "DATA GAP" in r.stdout and "P1.chg_pct_1d" in r.stdout
+    assert "Context: UNKNOWN" in r.stdout
+    assert "Context: NORMAL" not in r.stdout
+
+
+def test_risk_box_atr_pct_zero_not_false_datagap(tmp_path):
+    """chg IS present but atr14_pct==0 must NOT claim 'P1.chg_pct_1d absent'."""
+    pack = {**RISK_PACK, "P2.atr14_pct": {"v": 0.0, "unit": "pct", "src": "schwab"}}
+    r = _run("risk_box.py", str(_pack(tmp_path, pack)))
+    assert r.returncode == 0
+    assert "P1.chg_pct_1d absent" not in r.stdout    # the fact is present!
+    assert "Context: UNKNOWN" in r.stdout
+
+
+def test_risk_box_high_price_no_scientific_notation(tmp_path):
+    """BRK.A-scale prices must not render in scientific notation / lose dollars."""
+    pack = {**RISK_PACK,
+            "P1.last": {"v": 712345.67, "unit": "USD", "src": "schwab"},
+            "P2.sma50": {"v": 700000.5, "unit": "USD", "src": "schwab"},
+            "P2.atr14": {"v": 5321.09, "unit": "USD", "src": "schwab"}}
+    r = _run("risk_box.py", str(_pack(tmp_path, pack)))
+    assert "e+0" not in r.stdout and "E+0" not in r.stdout
+    assert "712345.67" in r.stdout
+
+
+def test_risk_box_missing_fact_exits_3(tmp_path):
+    pack = {k: v for k, v in RISK_PACK.items() if k != "P2.atr14"}
+    r = _run("risk_box.py", str(_pack(tmp_path, pack)))
+    assert r.returncode == 3 and "P2.atr14" in r.stderr
+
+
+def test_qa_exempts_riskbox_block(tmp_path):
+    """Derived (untagged) numbers inside the verbatim risk box never fail QA."""
+    block = subprocess.run(
+        [sys.executable, str(SCRIPTS / "risk_box.py"), str(_pack(tmp_path, RISK_PACK))],
+        capture_output=True, text=True).stdout
+    rp = tmp_path / "rep.md"
+    rp.write_text("## Risk box\n" + block + "\nPlain risk prose with no numbers.\n")
+    pp = tmp_path / "pack.json"
+    pp.write_text(json.dumps(RISK_PACK))
+    r = _run("qa_check.py", str(rp), str(pp))
+    assert r.returncode == 0, r.stdout
+    # the derived level 189.89 (no tag) must NOT be flagged untagged
+    assert "189.89" not in r.stdout
+    assert "untagged number '0.58" not in r.stdout
+
+
+def test_qa_unterminated_riskbox_does_not_hide_later_errors(tmp_path):
+    """Fail-safe: a riskbox start with NO end sentinel must not swallow the rest
+    of the report — a wrong tagged number after it must still hard-fail."""
+    rp = tmp_path / "r.md"
+    rp.write_text("## Risk box\n<!-- riskbox-block: inserted verbatim, do not edit -->\n"
+                  "### Risk box (computed)\n- derived 189.89 no end sentinel\n\n"
+                  "## Thesis\nATR14 is 999.0 [P2.atr14] — WRONG, must FAIL.\n")
+    pp = tmp_path / "p.json"
+    pp.write_text('{"P2.atr14": {"v": 27.46, "unit": "USD", "src": "schwab"}}')
+    r = _run("qa_check.py", str(rp), str(pp))
+    assert r.returncode == 1 and "FAIL P2.atr14" in r.stdout
 
 
 # ---------- mock end-to-end ----------
@@ -288,6 +569,93 @@ def test_qa_h_tag_without_source_fails(tmp_path):
     pp.write_text("{}")
     r = _run("qa_check.py", str(rp), str(pp))
     assert r.returncode == 1 and "no pack entry" in r.stdout
+
+
+# ---------- qa_check: unit-aware ratio/% + derived recompute (#2) ----------
+
+def test_qa_ratio_percent_cite_passes(tmp_path):
+    """A %-suffixed cite of a unit:ratio fact compares num/100 (the IV trap)."""
+    rp = tmp_path / "r.md"
+    rp.write_text("## Risk\nATM IV is 109.1% [P4.atm_iv_near] near-dated.\n")
+    pp = tmp_path / "p.json"
+    pp.write_text('{"P4.atm_iv_near": {"v": 1.091, "unit": "ratio", "src": "schwab"}}')
+    r = _run("qa_check.py", str(rp), str(pp))
+    assert r.returncode == 0, r.stdout
+    assert "PASS P4.atm_iv_near" in r.stdout
+
+
+def test_qa_ratio_percent_genuinely_wrong_still_fails(tmp_path):
+    """120% vs ratio 1.091 (=1.20) is a real 10% error → still FAIL."""
+    rp = tmp_path / "r.md"
+    rp.write_text("## Risk\nATM IV is 120% [P4.atm_iv_near].\n")
+    pp = tmp_path / "p.json"
+    pp.write_text('{"P4.atm_iv_near": {"v": 1.091, "unit": "ratio", "src": "schwab"}}')
+    r = _run("qa_check.py", str(rp), str(pp))
+    assert r.returncode == 1 and "FAIL P4.atm_iv_near" in r.stdout
+
+
+def test_qa_ratio_bare_cite_still_passes(tmp_path):
+    """A bare (no %) ratio cite is unchanged — compares directly."""
+    rp = tmp_path / "r.md"
+    rp.write_text("## Risk\nPut/call OI 0.856 [P4.put_call_oi_ratio].\n")
+    pp = tmp_path / "p.json"
+    pp.write_text('{"P4.put_call_oi_ratio": {"v": 0.856, "unit": "ratio", "src": "schwab"}}')
+    r = _run("qa_check.py", str(rp), str(pp))
+    assert r.returncode == 0 and "PASS P4.put_call_oi_ratio" in r.stdout
+
+
+def test_qa_derived_consistent_pack_passes():
+    from qa_check import recompute_derived
+    pack = {
+        "P1.price": {"v": 241.91, "unit": "USD", "src": "schwab"},
+        "P3.shares_outstanding": {"v": 186477898, "unit": "shares", "src": "sec-edgar"},
+        "P1.mcap": {"v": 45110000000.0, "unit": "USD",
+                    "src": "derived (P1.price x P3.shares_outstanding)"},
+        "P3.eps_diluted_ttm": {"v": 1.76, "unit": "USD", "src": "sec-edgar"},
+        "P3.pe_ttm": {"v": 137.4, "unit": "x",
+                      "src": "derived (P1.price / P3.eps_diluted_ttm)"},
+    }
+    results, warnings = recompute_derived(pack)
+    assert all(ok for ok, _ in results), [m for ok, m in results if not ok]
+    assert len(results) == 2  # mcap + pe_ttm both recomputed
+
+
+def test_qa_derived_tampered_fact_hard_fails():
+    from qa_check import recompute_derived
+    pack = {
+        "P1.price": {"v": 241.91, "src": "schwab"},
+        "P3.shares_outstanding": {"v": 186477898, "src": "sec-edgar"},
+        "P1.mcap": {"v": 90000000000.0,  # 2x too big — tampered
+                    "src": "derived (P1.price x P3.shares_outstanding)"},
+    }
+    results, _ = recompute_derived(pack)
+    assert any((not ok) and "P1.mcap" in m for ok, m in results)
+
+
+def test_qa_derived_missing_constituent_warns_not_fails():
+    from qa_check import recompute_derived
+    pack = {  # no P3.shares_outstanding present
+        "P1.price": {"v": 241.91, "src": "schwab"},
+        "P1.mcap": {"v": 45110000000.0,
+                    "src": "derived (P1.price x P3.shares_outstanding)"},
+    }
+    results, warnings = recompute_derived(pack)
+    assert all(ok for ok, _ in results)  # no hard fail
+    assert any("P1.mcap" in w for w in warnings)
+
+
+def test_qa_none_valued_fact_no_crash():
+    """A tagged number against a fact with v=None must not crash float(None)."""
+    from qa_check import check_pairs
+    results = check_pairs("value 5 [P1.x]", {"P1.x": {"v": None}})
+    assert isinstance(results, list)  # no TypeError
+
+
+def test_qa_double_sign_token_no_crash():
+    """A '--5' token captured by the sign-prefix regex must not crash to_float."""
+    from qa_check import check_pairs
+    results = check_pairs("double sign --5 [P3.x]", {"P3.x": {"v": -5}})
+    assert isinstance(results, list)  # no ValueError
 
 
 def test_qa_missing_position_file_no_crash(tmp_path):

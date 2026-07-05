@@ -62,7 +62,10 @@ def render(votes, malformed, n_target):
     counts = Counter(v[0] for v in votes)
     spread = (max(counts) - min(counts)) if votes else 0
     decision = decide(spread, n_valid, n_target)
-    mode = mode_notch([v[0] for v in votes]) if votes else None
+    notches = [v[0] for v in votes]
+    mode = mode_notch(notches) if votes else None
+    median_notch = float(statistics.median(notches)) if votes else None
+    mean_notch = round(statistics.mean(notches), 1) if votes else None
     mean_conv = round(statistics.mean(v[1] for v in votes), 1) if votes else 0.0
     if decision == "no-call":
         head = (f"**NO-CALL** — thin ensemble (N={n_valid} valid < 3)"
@@ -77,6 +80,12 @@ def render(votes, malformed, n_target):
            f"### Ensemble Rating: {head}", "",
            "| Rating | Notch | Votes |", "|---|---|---|"]
     out += [f"| {LABEL[n]} | {n} | {counts.get(n, 0)} |" for n in range(1, 6)]
+    if votes:
+        med_str = (f"{LABEL[int(median_notch)]} ({median_notch:.1f})"
+                   if median_notch.is_integer() and 1 <= median_notch <= 5
+                   else f"{median_notch:.1f}")
+        out += ["", f"Central tendency: mode {LABEL[mode]} · median {med_str} "
+                f"· mean {mean_notch:.1f}"]
     out += ["", f"Spread: {spread} notch(es) · Mean conviction: "
             f"{mean_conv}/10 · Decision: {decision}", "",
             "**Verdicts (verbatim):**"]
@@ -93,6 +102,7 @@ def render(votes, malformed, n_target):
             f"votes (target {n_target})._"]
     decision_json = {"decision": decision, "mode": mode,
                      "mode_label": LABEL[mode] if mode else None,
+                     "median_notch": median_notch, "mean_notch": mean_notch,
                      "spread": spread, "mean_conviction": mean_conv,
                      "n_valid": n_valid, "n_target": n_target,
                      "malformed": malformed}
