@@ -28,25 +28,38 @@ artifacts are the only channel between stages.
 |---|---|---|---|---|
 | 0 Scope | orchestrator | session | query | `00-scope.md` (job class, tickers, asset class; ambiguity → AskUserQuestion once) |
 | 1 Data pack | orchestrator via `scripts/vendors/*` CLIs; fallback finance skills/MCP | session | live tools | `10-datapack.md` + `.json` |
-| 1b Position | orchestrator via `scripts/vendors/schwab_account.py`; current-day only | session | live tool | `15-position.md` + `.json` (WITHHELD from stages 2–5) |
+| 1b Position | orchestrator via `scripts/vendors/snaptrade_account.py` (cross-broker; `schwab_account.py` fallback); current-day only | session | live tool | `15-position.md` + `.json` (WITHHELD from stages 2–5) |
 | 2 Analysts ×3 | Agent tool, parallel | sonnet | full pack verbatim | `20-analyst-{fund,tech,sent}.md` |
 | 3 Debate | bull + bear agents, parallel, 2 waves | sonnet | pack + analyst briefs | `30-debate.md` |
-| 4 Risk box | risk-officer agent | sonnet | pack + debate | `40-risk.md` |
-| 5 Ensemble | N judge agents, parallel, byte-identical inputs | opus | pack + briefs + debate + risk + guarded track record | `50-votes/vote-{1..N}.md` |
+| 4a Risk box (computed) | `scripts/risk_box.py` | — | `10-datapack.json` | `40-riskbox-block.md` (inserted into report VERBATIM) |
+| 4b Risk narrative | risk-officer agent | sonnet | pack + debate + `40-riskbox-block.md` | `40-risk.md` (leads with the verbatim block, then narration) |
+| 5 Ensemble | N judge agents, parallel, byte-identical inputs | opus | pack + briefs + debate + `40-risk.md` (leads with the verbatim risk box) + guarded track record | `50-votes/vote-{1..N}.md` |
 | 5b Tally | `scripts/ensemble.py` | — | votes | `55-rating-block.md` (inserted into report VERBATIM) |
 | 6 Report | writer agent | opus | all artifacts + template + `15-position.json` | `60-report.md` |
 | 7 QA | `scripts/qa_check.py` + 1 sonnet prose pass | sonnet | report + `10-datapack.json` + `15-position.json` | `70-qa.txt` |
-| 8 Publish + ledger | orchestrator + `scripts/ledger.py` | — | report | vault copy + ledger row |
+| 7b Render | `scripts/render_report.py` | — | `60-report.md` | `60-report.html` (self-contained styled page) |
+| 8 Publish + ledger | orchestrator + `scripts/ledger.py` + Artifact | — | report | HTML Artifact + vault copy (`.md`+`.html`) + ledger row |
 
-Run folder: `runs/<TICKER>-<date>-<hhmm>/`. Final report copies to the vault
-`reports/` folder; the ledger lives at vault `reports/ledger.jsonl`.
+Run folder: `runs/<TICKER>-<date>-<hhmm>/`. Both `60-report.md` and `60-report.html`
+copy to the vault `reports/` folder; the ledger lives at vault `reports/ledger.jsonl`.
+
+**Report delivery is HTML.** Markdown stays the CANONICAL artifact — the writer
+emits `60-report.md`, and `qa_check.py` + `ledger.py` parse it (all `[P#.fact]`
+cite-tag machinery depends on markdown headings/tables). After QA passes, Stage 7b
+runs `render_report.py 60-report.md` → `60-report.html` (a self-contained, styled
+page; no external assets). Stage 8 publishes that HTML via the **Artifact tool** as
+the primary deliverable and copies BOTH files to the vault. Never hand-author the
+HTML or let an agent regenerate it — the renderer is deterministic so the delivered
+page always matches the QA'd markdown byte-for-byte in content. For a portfolio/batch
+run, assemble one dossier (overview scorecard + every `60-report.md` via
+`render_report.md_to_html`) and publish it as a single Artifact.
 
 Resume rule: on crash, stat the artifacts in order and restart at the first
 missing file. There is no resume machinery beyond this rule.
 
 ## Invariants
 
-Enforce all fifteen. Any violation is a defect, not a judgment call.
+Enforce all sixteen. Any violation is a defect, not a judgment call.
 
 | # | Rule | Enforced by |
 |---|---|---|
@@ -62,9 +75,10 @@ Enforce all fifteen. Any violation is a defect, not a judgment call.
 | 10 | P1–P5 fill from the named vendor CLIs; every fallback-filled fact stamps its real `src` and the section is boxed `DEGRADED(P#, reason)` in Data Gaps. P1 carries a tiingo cross-check stamp: same-asof-date closes within 0.5% → CROSS-CHECK OK, else CROSS-CHECK FAIL named in Data Gaps (run continues). | CLIs exit nonzero and never fabricate; orchestrator stamps src + gaps |
 | 11 | Current-day runs use `schwab_quote.py` `P1.last` (real trade-time) as the price headline; box it `DELAYED` when `P1.is_realtime` is false and `STALE(as-of <date>)` when its trade-date precedes `as_of`. Prior close and chg% derive from `schwab_bars.py` settled bars, never the quote. The live quote is valid only when `as_of` is today — the CLI refuses a past/future `as_of` (exit 3), so back-dated runs use settled bars. When `P1.last` is absent (back-dated or quote-failed), the headline cites `[P1.price]` `settled close` — never a tag missing from the pack. | `schwab_quote.py` guard (as_of==today, parsed dates); writer picks `[P1.last]`/`[P1.price]` by pack presence; `tiingo_oracle.py --live` `P1.px_last_oob` cross-checks |
 | 12 | Position facts (`15-position.*`) are withheld from analysts, debate, risk, and judges; only the writer and `qa_check.py` read them. The rating is position-blind. | stage read-sets above; artifact is never merged into `10-datapack.*` |
-| 13 | Account access is read-only: `GET /accounts` (+ `/accounts/accountNumbers`) only. No order, trade, or mutation endpoint is ever referenced. | CLI holds no order path; `test_schwab_account.py` asserts absence |
-| 14 | Position is live-only: a past/future `--asof` yields no position (exit 3), never a fabricated historical holding. | `schwab_account.py` `--asof` guard (parsed dates vs today) |
+| 13 | Account access is read-only across every position source: the CLIs list accounts + positions only (Schwab `GET /accounts`; SnapTrade `list_user_accounts` + `get_all_account_positions`). No order, trade, or mutation endpoint is ever referenced. | CLIs hold no order path; `test_schwab_account.py` + `test_snaptrade_account.py` assert absence |
+| 14 | Position is live-only: a past/future `--asof` yields no position (exit 3), never a fabricated historical holding. | `snaptrade_account.py` / `schwab_account.py` `--asof` guard (parsed dates vs today) |
 | 15 | The position never changes the headline call — only the action framing around it. A "Your Position" section that argues the rating is a defect. | writer role card; QA prose pass |
+| 16 | The risk box's adverse-move, invalidation, and context numbers come only from `risk_box.py`, inserted verbatim as `40-riskbox-block.md`; the risk officer narrates around it and never recomputes them. The block is context-only — never an action/size, never changes the rating. | `risk_box.py` emits the block; officer card forbids recompute; `qa_check.py` exempts the verbatim region |
 
 ## Byte-identical inputs and no paraphrase
 
@@ -106,14 +120,24 @@ range/vol; refuses a past `--asof` so back-dated runs use settled bars) and add
 
 ## Position (Stage 1b, current-day only)
 
-Run `<UPSTREAM>/.venv/bin/python scripts/vendors/schwab_account.py --ticker X --asof <date>`
-after the pack. Its `H1` facts (weight, cost basis, unrealized P/L, % of book)
-go to a SEPARATE artifact (`15-position.md` + `.json`), never merged into
-`10-datapack.*` — withheld from analysts, debate, risk, and judges (invariant
-12); only the writer and `qa_check.py` read it. Held → full `H1.*`; flat →
-`{"H1.held": false}` (cold-start report unchanged); back-dated or auth-fail → no
-artifact, noted in Data Gaps. Read-only: GET `/accounts` only (invariant 13).
-When Stage 1b wrote the artifact, pass it to QA as `qa_check.py 60-report.md 10-datapack.json 15-position.json`; otherwise (flat wrote a file too, but back-dated/auth-fail runs write none) use the 2-arg form. `qa_check.py` tolerates an absent position path either way.
+Run `<UPSTREAM>/.venv/bin/python scripts/vendors/snaptrade_account.py --ticker X --asof <date>`
+after the pack — the cross-broker source (Robinhood, Schwab, Fidelity, … via
+SnapTrade). It aggregates the LONG holding across every linked account. Its `H1`
+facts (qty, avg cost, unrealized P/L, % of book, plus `H1.brokers` and
+`H1.n_accounts`) go to a SEPARATE artifact (`15-position.md` + `.json`), never
+merged into `10-datapack.*` — withheld from analysts, debate, risk, and judges
+(invariant 12); only the writer and `qa_check.py` read it. Held → full `H1.*`
+(the three P/L facts are omitted only when a linked account gives no cost basis);
+flat → `{"H1.held": false}` (cold-start report unchanged); back-dated or
+auth-fail → no artifact, noted in Data Gaps. Read-only: lists accounts +
+positions only, no order path (invariant 13).
+
+**Fallback:** if `snaptrade_account.py` exits 2 (unconfigured/auth), fall back to
+`schwab_account.py --ticker X --asof <date>` (Schwab-only, `src: schwab`). Use ONE
+source, never both — SnapTrade already aggregates Schwab if the owner linked it, so
+summing would double-count. The fact `src` stamp records which source ran.
+
+When Stage 1b wrote the artifact, pass it to QA as `qa_check.py 60-report.md 10-datapack.json 15-position.json`; otherwise (back-dated/auth-fail runs write none) use the 2-arg form. `qa_check.py` tolerates an absent position path either way.
 
 ## Ledger
 
@@ -123,6 +147,17 @@ default fallback. Fetch P7 with `ledger.py read --ticker <T> --before <as_of>`,
 passing the run's `as_of` (the look-ahead guard). Append one row per run
 (including aborts) with `ledger.py append`; on write failure it prints the row
 with a MANUAL-APPEND banner and exits 2 — append that row by hand, never skip.
+
+## Risk box (computed)
+
+Before spawning the risk officer, run `<UPSTREAM>/.venv/bin/python scripts/risk_box.py
+10-datapack.json > 40-riskbox-block.md`. It computes the adverse move (ATR14 / 30d σ
+multiples), the today-move/ATR ratio, the SMA50±ATR invalidation anchor, and a
+NORMAL/ABNORMAL context flag from pack facts — the numbers the officer used to
+compute by hand (the FIND-1 surface). A missing required fact → exit 3 (fail loud).
+Pass the block to the officer, who narrates around it and never recomputes it, and
+insert it VERBATIM into the report's `## Risk box` slot. The block is context-only:
+it never states an action or size and never changes the rating (invariant 16).
 
 ## Ensemble tally
 
@@ -143,8 +178,8 @@ disclose it. Insert the emitted `55-rating-block.md` into the report verbatim.
 | Non-P1 section dead after 1 retry | `MISSING(reason)`, run continues |
 | Vendor CLI nonzero exit | retry once → free-tool fallback; facts stamp real `src`; `DEGRADED(P#, reason)` in Data Gaps |
 | Tiingo cross-check FAIL or unavailable | named in Data Gaps (`CROSS-CHECK FAIL/UNAVAILABLE`); run continues; never triggers P1 fallback alone |
-| `schwab_account.py` exit 2 (auth/reauth) | "Your Position" omitted + noted in Data Gaps; run continues position-blind |
-| `schwab_account.py` exit 3 (back-dated `--asof`) | no position section (expected for back-dated runs); run continues |
+| `snaptrade_account.py` exit 2 (unconfigured/auth) | fall back to `schwab_account.py`; if that also exits 2, "Your Position" omitted + noted in Data Gaps; run continues position-blind |
+| Position CLI exit 3 (back-dated `--asof`) | no position section (expected for back-dated runs); run continues |
 | Ticker not held (`H1.held=false`) | no position section; cold-start report unchanged |
 | qa_check hard fail ×2 | ship with QA-exceptions box quoting failures verbatim |
 | ledger append fails | print row in chat; never skip silently |

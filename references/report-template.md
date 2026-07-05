@@ -31,9 +31,12 @@ evidence that would flip the rating.
 
 ## Risk box
 
-- Adverse move: in ATR14 [P2.atr14] and 30d σ [P2.sigma30] multiples.
-- Invalidation level: {{level}} (— ATR from the 50-day mean).
-- Concentration / event risk: next earnings {{earnings_date}} [P5.next_earnings].
+<!-- riskbox-block: inserted verbatim, do not edit -->
+{{40-riskbox-block.md inserted here verbatim from risk_box.py — do not edit or recompute}}
+
+The risk officer's narration (1R stop from the invalidation anchor, concentration,
+and event risk: next earnings {{earnings_date}} [P5.next_earnings]) goes BELOW the
+block. The computed block is context-only and never changes the rating.
 
 ## Valuation
 

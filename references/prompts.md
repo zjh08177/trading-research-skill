@@ -71,12 +71,19 @@ Moves in ATR14 units. Name the invalidation levels.
 ## Risk officer
 
 ```
-Mission: size the risk, not the view. From the debate and pack, state position
-risk in ATR14 and 30d σ terms: plausible adverse move, invalidation level, and
-what a 1R stop implies. Flag concentration and event risk (P5 earnings date).
-Inputs: DATA PACK + debate {{debate_md}}. Output ≤ 250 words. Every move in
-ATR14 [P2.atr14] units BEFORE any escalation word. Cite by tag.
-End with: KEY POINTS: <2-3 bullets: adverse move, invalidation, event risk>.
+Mission: size the risk, not the view. The adverse move, invalidation anchor, and
+NORMAL/ABNORMAL context are ALREADY COMPUTED for you in the RISK BOX below — do
+NOT recompute them, restate them as your own, or contradict them (invariant 16).
+Your job is to NARRATE around that block: what a 1R stop from the invalidation
+anchor implies, concentration risk, and event risk (P5 earnings date). Read the
+context flag as given; never turn it into an action or a size.
+BEGIN your output with the RISK BOX block below reproduced VERBATIM and unchanged
+(so 40-risk.md is self-contained for the judges), then your narration beneath it.
+Inputs: DATA PACK + debate {{debate_md}} + RISK BOX {{riskbox_block}}. Output
+≤ 250 words of narration (the reproduced block does not count). Every move in
+ATR14 [P2.atr14] units BEFORE any escalation word.
+Cite by tag; for any figure already in the risk box, reference it, don't restate
+a new number. End with: KEY POINTS: <2-3 bullets: adverse move, invalidation, event risk>.
 ```
 
 ## Judge (PM adjudicator)
@@ -98,7 +105,9 @@ VERDICT: <StrongSell|Sell|Hold|Buy|StrongBuy> | CONVICTION: <1-10> | WHY: <one s
 ```
 Mission: assemble the institutional report from all artifacts using
 references/report-template.md. Insert 55-rating-block.md VERBATIM into the
-rating slot — do not edit, re-order, or re-word it.
+rating slot AND 40-riskbox-block.md VERBATIM into the `## Risk box` slot — do
+not edit, re-order, re-word, or recompute either; the risk officer's narration
+goes below the risk box.
 Inputs: all run artifacts + template {{artifacts}}. Rules: every number carries
 its [P#.fact] tag or a same-line source URL. Preserve agent wording; do not
 paraphrase briefs into new claims. Moves in ATR14 units. Fill the Data Gaps box
@@ -109,13 +118,32 @@ Headline price: if the pack has P1.last, render {{price_tag}}=[P1.last] and
 "STALE: last trade <P1.last date>" if that date precedes as_of). If P1.last is
 absent (back-dated or quote-failed run), render {{price_tag}}=[P1.price] and
 {{freshness}}="settled close". Never cite a tag that is not in the pack.
-Position framing: read 15-position.json {{position_json}}. Only if H1.held=true,
-add a "## Your position" section stating your weight [H1.pct_of_book] and open
-P/L [H1.unrealized_pl_pct] (relative framing; absolute shares/$ stay in the run
-artifact), then frame the ACTION the rating implies for a holder — trim/add/hold/
-exit — against the risk-box invalidation level. The rating block is position-blind
-and FINAL: the position never argues the rating is wrong (invariant 15). If
-H1.held=false or 15-position.json is absent, omit the section entirely.
+Auto-rendered dashboard: a KEY-INDICATORS panel + a DECISION RAIL are inserted
+deterministically at the report top by render_report.py — do NOT hand-tabulate the
+raw indicator dump; interpret, don't restate.
+TWO-SIDED DECISION LEVELS (resolves the Hold-invalidation ambiguity): a level is
+never a bare price — it names the RESULTING ACTION and DIRECTION. Every report states
+BOTH boundaries: a DOWNSIDE below which the thesis breaks (→ Sell/Exit/Trim) and an
+UPSIDE above which it upgrades (→ Buy/Add). A Hold carries two real, distinct levels;
+a Sell's upside = short-invalidation (→ stop trimming / re-rate); a Buy's downside =
+thesis-break (→ exit). Pick each from pack SMA20/50/200, day range, or 52wk — cite it.
+At the very end of the "## Risk box" section (below the verbatim block + narration),
+emit ONE machine-readable line (parsed into 56-levels.json; powers the rail + monitor):
+  LEVELS: downside=<price>|<Sell|Exit|Trim> upside=<price>|<Buy|Add|None> basis_dn=<SMA200|day-low|...> basis_up=<SMA50|...>
+Position framing: read 15-position.json {{position_json}}. Only if H1.held=true, add a
+concrete, ACTIONABLE "## Your position" section — the rating block is position-blind and
+FINAL (invariant 15); the position never argues it. State weight [H1.pct_of_book], shares
+[H1.shares], value, open P/L [H1.unrealized_pl_pct]. Then:
+  - SIZE as a band tied to the rating (Sell → "trim ~25–40% (≈$X–Y off)"; Hold → "hold
+    current size — add only above the upside trigger, exit below the downside"; Buy →
+    "add ~X%"). Dollar figures derive from [H1.market_value].
+  - TWO-SIDED PLAN in $: "▼ below <downside $> → <sell/exit/trim>; ▲ above <upside $> →
+    <add/buy>", each with % from spot and ATR distance.
+  - TAX flag from open-P/L sign: gain → "trimming realizes a taxable gain"; loss → "loss
+    is tax-harvestable — mind the 30-day wash-sale window if you'd rebuy".
+  - BOOK FIT: weight vs book + concentration note (>5% single-name, or sector-cluster
+    membership).
+If H1.held=false or 15-position.json is absent, omit the section entirely.
 ```
 
 ## QA prose checker (sonnet pass)
@@ -127,6 +155,8 @@ arithmetic.
 Inputs: 60-report.md + 10-datapack.json {{report}} {{datapack_json}}.
 Output: a bullet list of exceptions, each quoting the offending sentence and
 the rule it breaks (untagged number / unsupported claim / escalation-before-ATR
-/ altered rating block). If clean, output "PROSE QA: clean". Do not rewrite the
-report; only flag.
+/ altered rating block / altered risk box). The risk box is script-computed and
+exempt from arithmetic QA, so YOU are its guard: flag any number inside the
+verbatim risk-box region that the risk officer changed from risk_box.py's output.
+If clean, output "PROSE QA: clean". Do not rewrite the report; only flag.
 ```
