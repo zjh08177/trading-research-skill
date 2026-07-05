@@ -183,6 +183,7 @@ def main(argv=None):
         return 2
     with open(argv[0]) as f:
         report = f.read()
+    report = report.replace("−", "-")  # typographic minus (−) → ASCII so negatives parse
     with open(argv[1]) as f:
         pack = json.load(f)
     if len(argv) >= 3 and argv[2] and os.path.exists(argv[2]):
