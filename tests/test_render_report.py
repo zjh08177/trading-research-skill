@@ -53,6 +53,16 @@ def test_parse_levels_marker_overrides():
     assert lv["upside"]["level"] == 112.0 and lv["upside"]["basis"] == "SMA50"
 
 
+def test_marker_none_side_filled_from_derive():
+    # writer emits a downside but marks upside None -> upside must be filled from derive,
+    # never left None (spec E: a Hold/Sell always carries both sides with an action).
+    md = "risk\nLEVELS: downside=88.5|Sell upside=0|None basis_dn=SMA200 basis_up=SMA50\n"
+    lv = rr.parse_levels_marker(md, _pack(), rating="Hold")
+    assert lv["downside"]["level"] == 88.5 and lv["downside"]["action"] == "Sell"
+    assert lv["upside"] is not None and lv["upside"]["action"] == "Add / buy"
+    assert lv["derived"] is False  # at least one side is writer-emitted
+
+
 def test_rail_and_panel_render():
     lv = rr.derive_levels(_pack(), rating="Hold")
     rail = rr.decision_rail(_pack(), lv)

@@ -492,12 +492,15 @@ def build_dashboard(pack, pos, levels):
 
 
 def parse_levels_marker(md, pack, rating=None):
-    """Extract the writer's `LEVELS: downside=..|.. upside=..|.. basis_dn=.. basis_up=..` line."""
+    """Extract the writer's `LEVELS: downside=..|.. upside=..|.. basis_dn=.. basis_up=..` line.
+    Writer-emitted sides win; any side the writer omits or marks `None` is filled from
+    derive_levels so the registry is ALWAYS two-sided with a named action (spec E)."""
     m = re.search(r"^LEVELS:\s*(.+)$", md, re.M)
     spot = _v(pack, "P1.price") or _v(pack, "P1.last")
     atr = _v(pack, "P2.atr14")
+    fallback = derive_levels(pack, rating) or {}
     if not m:
-        return derive_levels(pack, rating)
+        return fallback or None
     body = m.group(1)
 
     def side(key):
@@ -505,13 +508,19 @@ def parse_levels_marker(md, pack, rating=None):
         bm = re.search(rf"basis_{('dn' if key=='downside' else 'up')}=([^\s]+)", body)
         if not mm:
             return None
+        act = mm.group(2).strip()
+        if not act or act.lower() == "none":
+            return None
         lvl = float(mm.group(1))
         dist = round((spot - lvl) / atr, 2) if (atr and key == "downside") else (
             round((lvl - spot) / atr, 2) if atr else None)
-        return {"level": lvl, "action": mm.group(2).strip(),
+        return {"level": lvl, "action": act,
                 "basis": (bm.group(1).replace("_", " ") if bm else key), "atr_dist": dist}
-    return {"spot": round(spot, 2) if spot else None,
-            "downside": side("downside"), "upside": side("upside")}
+    dn, up = side("downside"), side("upside")
+    return {"spot": round(spot, 2) if spot else fallback.get("spot"),
+            "downside": dn or fallback.get("downside"),
+            "upside": up or fallback.get("upside"),
+            "derived": dn is None and up is None}
 
 
 def _rating_from_md(md):
@@ -531,12 +540,16 @@ def main(argv):
     pack = json.loads((d / "10-datapack.json").read_text()) if (d / "10-datapack.json").exists() else {}
     pos = json.loads((d / "15-position.json").read_text()) if (d / "15-position.json").exists() else {}
     rating = _rating_from_md(md)
-    if (d / "56-levels.json").exists():
+    # Re-parse the marker on every render so 56-levels.json tracks the current report
+    # (SSOT for the rail + monitor F); only fall back to on-disk when parse yields nothing.
+    parsed = parse_levels_marker(md, pack, rating)
+    if parsed and (parsed.get("downside") or parsed.get("upside")):
+        levels = parsed
+        (d / "56-levels.json").write_text(json.dumps(levels))
+    elif (d / "56-levels.json").exists():
         levels = json.loads((d / "56-levels.json").read_text())
     else:
-        levels = parse_levels_marker(md, pack, rating)
-        if levels:
-            (d / "56-levels.json").write_text(json.dumps(levels))
+        levels = parsed
     dash = build_dashboard(pack, pos, levels) if pack else ""
     m = re.search(r"^#\s+(.+)$", md, re.M)
     title = m.group(1).strip() if m else src.stem
