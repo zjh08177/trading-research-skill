@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from datetime import datetime
 
 import pytest
@@ -19,7 +20,7 @@ import snaptrade_account as sa
 import snaptrade_holdings as sh
 
 TODAY = datetime.now().date().isoformat()
-ACCT_DIR = "/Users/bytedance/Work/sidekicks/tradingagents-workspace/trading-research-skill/scripts/vendors"
+ACCT_DIR = str(Path(__file__).resolve().parents[2] / "scripts" / "vendors")
 SCRIPT = ACCT_DIR + "/snaptrade_account.py"
 
 

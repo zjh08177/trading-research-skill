@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from datetime import datetime, timezone
 
 import pytest
@@ -15,7 +16,7 @@ from tradingagents.dataflows.errors import (
     VendorRateLimitError,
 )
 
-SCRIPT = "/Users/bytedance/Work/sidekicks/tradingagents-workspace/trading-research-skill/scripts/vendors/schwab_quote.py"
+SCRIPT = str(Path(__file__).resolve().parents[2] / "scripts" / "vendors" / "schwab_quote.py")
 TODAY = datetime.now().date().isoformat()  # local basis, matches the CLI guard
 TRADE_MS = int(datetime(2026, 7, 2, 20, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
 TRADE_ISO = datetime.fromtimestamp(TRADE_MS / 1000, tz=timezone.utc).isoformat()

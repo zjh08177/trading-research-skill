@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from datetime import datetime
 
 import pytest
@@ -22,7 +23,7 @@ from tradingagents.dataflows.errors import (
     VendorRateLimitError,
 )
 
-SCRIPT = "/Users/bytedance/Work/sidekicks/tradingagents-workspace/trading-research-skill/scripts/vendors/schwab_account.py"
+SCRIPT = str(Path(__file__).resolve().parents[2] / "scripts" / "vendors" / "schwab_account.py")
 TODAY = datetime.now().date().isoformat()
 
 

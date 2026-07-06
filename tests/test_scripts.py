@@ -1,5 +1,5 @@
 """Lean pytest suite for the three trading-research scripts. Stdlib + pytest.
-Run with the system python3: `python3 -m pytest trading-research-skill/tests`."""
+Run with the skill venv: `.venv/bin/python -m pytest tests`."""
 import json
 import subprocess
 import sys

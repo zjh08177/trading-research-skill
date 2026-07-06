@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -15,7 +16,7 @@ from tradingagents.dataflows.errors import (
     VendorNotConfiguredError,
 )
 
-SCRIPT = "/Users/bytedance/Work/sidekicks/tradingagents-workspace/trading-research-skill/scripts/vendors/schwab_bars.py"
+SCRIPT = str(Path(__file__).resolve().parents[2] / "scripts" / "vendors" / "schwab_bars.py")
 END = datetime(2026, 6, 30, tzinfo=timezone.utc)
 ALL_KEYS = {
     "P1.price", "P1.chg_pct_1d", "P1.high_52w", "P1.low_52w", "P1.avg_vol_20d",
