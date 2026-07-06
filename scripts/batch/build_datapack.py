@@ -43,7 +43,50 @@ def run_ledger(ticker):
     return p.stdout.strip() or "No prior track record."
 
 
-def build_facts(ticker, kind):
+def add_options(ticker, kind, facts, gaps, options):
+    """Options wiring. Flag off (or a non-optionable kind) → the shipped Schwab P4
+    behavior. `--options` → fetch the UW P8 pack first (spot from P1.last/price,
+    ATR from P2.atr14); on success suppress the light Schwab P4 (P8 is the primary
+    options source, D2), routing P8._gaps into Data gaps; on P8 failure fall back
+    to Schwab P4 (D2/EC4)."""
+    def schwab_p4():
+        ex, d, err = run_cli("schwab_options", ["--ticker", ticker])
+        if ex == 0:
+            facts.update(d)
+        else:
+            gaps.append(f"P4 MISSING(options: {err})")
+
+    if not options:
+        if kind in ("equity", "etf"):
+            schwab_p4()
+        else:
+            gaps.append(f"P4 MISSING(by-design: {kind})")
+        return
+    if kind not in ("equity", "etf"):
+        gaps.append(f"P8 MISSING(by-design: {kind} has no options chain)")
+        return
+    spot = facts.get("P1.last", {}).get("v") or facts.get("P1.price", {}).get("v")
+    if not spot:
+        gaps.append("P8 MISSING(no spot price for uw_options); Schwab P4 fallback")
+        schwab_p4()
+        return
+    a = ["--ticker", ticker, "--spot", str(spot)]
+    atr = facts.get("P2.atr14", {}).get("v")
+    if atr:
+        a += ["--atr", str(atr)]
+    ex, d, err = run_cli("uw_options", a)
+    if ex == 0 and d:
+        for g in (d.pop("P8._gaps", None) or []):
+            gaps.append(f"P8 {g}")
+        facts.update(d)
+        gaps.append("P4 suppressed under --options (UW P8 primary; Schwab IV "
+                    "backfills only on a named P8 gap)")
+    else:
+        gaps.append(f"P8 MISSING(uw_options exit {ex}: {err}); Schwab P4 fallback")
+        schwab_p4()
+
+
+def build_facts(ticker, kind, options=False):
     facts, gaps, degraded = {}, [], []
     ex, d, err = run_cli("schwab_bars", ["--ticker", ticker, "--asof", ASOF])
     if ex == 0:
@@ -68,14 +111,7 @@ def build_facts(ticker, kind):
             gaps.append(f"P3 MISSING(edgar: {err})")
     else:
         gaps.append(f"P3 MISSING(by-design: {kind} has no SEC fundamentals)")
-    if kind in ("equity", "etf"):
-        ex, d, err = run_cli("schwab_options", ["--ticker", ticker])
-        if ex == 0:
-            facts.update(d)
-        else:
-            gaps.append(f"P4 MISSING(options: {err})")
-    else:
-        gaps.append(f"P4 MISSING(by-design: {kind})")
+    # marketaux (P5/P6) runs BEFORE options so news/earnings precede the P8 fetch.
     ex, d, err = run_cli("marketaux_news", ["--ticker", ticker, "--days", "7", "--asof", ASOF])
     if ex == 0:
         facts.update(d)
@@ -90,6 +126,7 @@ def build_facts(ticker, kind):
     else:
         gaps.append(f"P5 marketaux none/thin ({err}); sentiment analyst enriches via WebSearch(discovery)")
         gaps.append("P6 news_tone DATA GAP (no marketaux articles)")
+    add_options(ticker, kind, facts, gaps, options)
     px = facts.get("P1.price", {}).get("v")
     sh = facts.get("P3.shares_outstanding", {})
     if px and sh.get("v"):
@@ -112,7 +149,8 @@ def build_facts(ticker, kind):
 
 
 SECT = {"P1": "P1 Quote", "P2": "P2 Technicals", "P3": "P3 Fundamentals (SEC XBRL)",
-        "P4": "P4 Options", "P5": "P5 News/events", "P6": "P6 Sentiment"}
+        "P4": "P4 Options", "P5": "P5 News/events", "P6": "P6 Sentiment",
+        "P8": "P8 Dealer positioning & options (UW)"}
 
 
 def render_md(ticker, kind, facts, gaps, degraded, xline, p7):
@@ -128,7 +166,7 @@ def render_md(ticker, kind, facts, gaps, degraded, xline, p7):
                 f"{' (STALE: market closed since; ' + ASOF + ' is a weekend/holiday)' if stale else ''}. "
                 f"Prior close/chg% from settled bars: {px['v'] if px else 'n/a'} close.")
         lines += [note, ""]
-    for sec in ("P1", "P2", "P3", "P4", "P5", "P6"):
+    for sec in ("P1", "P2", "P3", "P4", "P5", "P6", "P8"):
         keys = [k for k in facts if k.startswith(sec + ".")]
         if not keys:
             continue
@@ -175,12 +213,13 @@ def build_position(ticker, holdings):
 
 def main():
     tickers = json.loads(sys.argv[1])
+    options = "--options" in sys.argv[2:]
     holdings = json.load(open(HOLD))
     summary = []
     for ticker, kind in tickers:
         run_dir = f"{RUNS}/{ticker}-{ASOF}-{STAMP}"
         os.makedirs(run_dir, exist_ok=True)
-        facts, gaps, degraded, xline = build_facts(ticker, kind)
+        facts, gaps, degraded, xline = build_facts(ticker, kind, options)
         p7 = run_ledger(ticker)
         md, run_id = render_md(ticker, kind, facts, gaps, degraded, xline, p7)
         json.dump(facts, open(f"{run_dir}/10-datapack.json", "w"), indent=1)
