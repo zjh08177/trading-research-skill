@@ -115,6 +115,14 @@ RATING_BLOCK = ("rating-block: inserted verbatim",
                 lambda ln: ln.strip().startswith("_Actual N:"))
 RISKBOX_BLOCK = ("riskbox-block: inserted verbatim",
                  lambda ln: "riskbox-block: end" in ln)
+# The options block's context TABLES are untagged by design (a number tagged to a
+# P8 list fact hard-fails check_pairs). scan_untagged skips the whole block; but
+# check_pairs still verifies every tagged P8 SCALAR (the block is NOT stripped
+# from check_pairs, unlike the risk box). The "Dealer Positioning" heading also
+# matches the "position" CHECK_SECTION keyword, so without this exempt every
+# context-table cell would warn.
+OPTIONS_BLOCK = ("options-block: inserted verbatim",
+                 lambda ln: "options-block: end" in ln)
 
 
 def _block_line_indices(lines, blocks):
@@ -153,7 +161,7 @@ def scan_untagged(text, sections=CHECK_SECTIONS):
     scanned (fail-safe)."""
     warnings = []
     lines = text.splitlines()
-    exempt = _block_line_indices(lines, [RATING_BLOCK, RISKBOX_BLOCK])
+    exempt = _block_line_indices(lines, [RATING_BLOCK, RISKBOX_BLOCK, OPTIONS_BLOCK])
     section_on = False
     for idx, line in enumerate(lines):
         if idx in exempt:
