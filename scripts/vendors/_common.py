@@ -3,12 +3,16 @@ import json
 import os
 import sys
 
-UPSTREAM = "/Users/bytedance/Work/sidekicks/tradingagents-workspace/TradingAgents-upstream"
-sys.path.insert(0, UPSTREAM)
+VENDORED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_vendored")
+sys.path.insert(0, VENDORED)
 
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(UPSTREAM, ".env"), override=False)
+CREDS_PATH = os.environ.get(
+    "TRADINGAGENTS_VENDORS_ENV",
+    os.path.join(os.path.expanduser("~"), ".config", "tradingagents", "vendors.env"),
+)
+load_dotenv(CREDS_PATH, override=False)
 
 
 def fact(v, unit, asof, src):
