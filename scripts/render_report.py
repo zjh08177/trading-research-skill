@@ -379,8 +379,25 @@ def key_panel(pack, pos):
     if fr:
         groups.append('<div class="kgroup">Fundamentals</div>' + fr)
 
+    # P8 (UW dealer positioning) leads when present; P4 (Schwab IV) is the
+    # fallback — under --options P4 is suppressed, so a P4-only panel would blank.
+    gex = _v(pack, "P8.gex_net")
+    regime = _v(pack, "P8.gex_net") is not None and _v(pack, "P8.gex_regime") or None
+    ivr = _v(pack, "P8.iv_rank_1y")
+    flip = _v(pack, "P8.flip_level")
+    dflip = _v(pack, "P8.dist_flip")
+    skew = _v(pack, "P8.rr_skew_25d")
+    skew_fact = pack.get("P8.rr_skew_25d")
+    skew_lbl = skew_fact.get("label") if isinstance(skew_fact, dict) else None
     iv = _v(pack, "P4.atm_iv_near")
     opt_rows = [
+        ("Net GEX", (_usd(gex) if gex is not None else None), regime, None,
+         ("neg" if regime == "short-gamma" else ("pos" if regime == "long-gamma" else ""))),
+        ("IV rank 1y", (f"{ivr:.0f}%" if ivr is not None else None), None, None, ""),
+        ("Gamma flip", (_px(flip) if flip is not None else None),
+         (f"{dflip*100:+.1f}% from spot" if dflip is not None else None), None, ""),
+        ("25Δ RR skew", (f"{skew*100:+.1f}%" if skew is not None else None),
+         skew_lbl, None, ("neg" if (skew or 0) < 0 else "pos")),
         ("ATM IV", (f"{iv*100:.1f}%" if iv is not None else None), None, None, ""),
         ("Put/Call vol", (f"{_v(pack,'P4.put_call_volume_ratio'):.2f}" if _v(pack, "P4.put_call_volume_ratio") else None),
          None, None, ""),
