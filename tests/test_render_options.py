@@ -95,6 +95,16 @@ def test_context_lists_are_tables_cited_by_tag_no_number_tag():
     assert not any("non-scalar" in m for ok, m in qa.check_pairs(block, pack) if not ok)
 
 
+def test_data_inconsistent_surfaced():
+    pack = _pack()
+    pack["P8.gex_data_inconsistent"] = _fact(True, "bool", "snapshot", derived=True)
+    block = R.build(pack)
+    assert "[P8.gex_data_inconsistent]" in block and "unreliable" in block
+    # false -> not surfaced, no false alarm
+    pack["P8.gex_data_inconsistent"] = _fact(False, "bool", "snapshot", derived=True)
+    assert "[P8.gex_data_inconsistent]" not in R.build(pack)
+
+
 def test_short_gamma_flip_line_explicit():
     pack = {"P8.gex_net": _fact(-500000000.0, "usd", "daily", derived=True),
             "P8.gex_regime": _fact("short-gamma", "label", "snapshot", derived=True)}

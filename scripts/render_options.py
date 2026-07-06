@@ -129,6 +129,11 @@ def build(pack):
         elif "P8.gex_net" in scalars:
             lines.append("- Gamma flip: none in range (short-gamma / no net-GEX "
                          "zero-crossing) (snapshot)")
+        inc = scalars.get("P8.gex_data_inconsistent")
+        if isinstance(inc, dict) and inc.get("v") is True:
+            lines.append("- Data-inconsistent [P8.gex_data_inconsistent]: net-GEX "
+                         "sign and spot-vs-flip disagree — flip treated as "
+                         "unreliable, regime taken from the sign only (snapshot)")
         for side in ("call", "put"):
             w = scalars.get(f"P8.{side}_wall")
             if isinstance(w, dict) and w.get("v") is not None:
