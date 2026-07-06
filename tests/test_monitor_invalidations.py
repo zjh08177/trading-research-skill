@@ -133,3 +133,26 @@ def test_holdings_arg_scopes_without_live_fetch(tmp_path, monkeypatch):
     out_md = tmp_path / "monitor-2026-07-06.md"
     mon.main([str(d), str(out_md), "2026-07-06", "--holdings", str(snap)])
     assert json.loads((tmp_path / "monitor-2026-07-06.json").read_text()) == []  # T scoped out
+
+
+class _Proc:
+    def __init__(self, rc, out, err):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def test_fetch_held_raises_on_import_error(monkeypatch):
+    """Wrong-interpreter ModuleNotFoundError must be LOUD — a silent None here
+    would fall back to the full registry and mask holdings-scoping being off."""
+    import pytest
+    monkeypatch.setattr(mon.subprocess, "run",
+                        lambda *a, **k: _Proc(1, "", "ModuleNotFoundError: No module named 'snaptrade_client'"))
+    with pytest.raises(RuntimeError):
+        mon.fetch_held()
+
+
+def test_fetch_held_falls_back_on_auth_failure(monkeypatch):
+    """A non-import failure (auth / exit!=0) still returns None so the caller
+    falls back to the full registry."""
+    monkeypatch.setattr(mon.subprocess, "run",
+                        lambda *a, **k: _Proc(1, "", "SnapTradeError: 401 unauthorized"))
+    assert mon.fetch_held() is None

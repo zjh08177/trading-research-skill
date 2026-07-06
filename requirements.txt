@@ -1,0 +1,17 @@
+# Runtime deps for the trading-research vendor + batch scripts.
+#
+# CANONICAL INTERPRETER: the upstream TradingAgents venv
+#   <workspace>/TradingAgents-upstream/.venv
+# It already carries every package below PLUS the editable `tradingagents`
+# package that scripts/vendors/{schwab_*,edgar_fundamentals,tiingo_oracle,
+# marketaux_news}.py import. Run the FULL pipeline (monitor, quotes, packs,
+# action_plan) under that venv — a bare venv will be missing `tradingagents`.
+#
+# A fresh standalone venv can only run the SnapTrade-holdings path
+# (snaptrade_holdings.py), which needs just the two *-starred deps below.
+
+snaptrade-python-sdk==11.0.212   # * read-only positions SDK (imports as `snaptrade_client`)
+python-dotenv>=1.2.2             # * .env cred loading (holdings + every vendor script)
+pandas>=3.0.4
+requests>=2.34.2
+# tradingagents  — NOT on PyPI; `pip install -e` the ../TradingAgents-upstream repo.

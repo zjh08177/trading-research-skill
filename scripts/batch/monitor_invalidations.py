@@ -62,14 +62,26 @@ def load_holdings_dump(path):
 def fetch_held():
     """Current portfolio symbols via snaptrade_holdings.py (live, read-only). Returns
     a set, or None when holdings can't be determined (auth/exit!=0) so the caller
-    falls back to the full registry instead of silently monitoring nothing."""
+    falls back to the full registry instead of silently monitoring nothing. RAISES
+    on an import/config failure (wrong interpreter): a silent full-registry fallback
+    would mask holdings-scoping being off — the exact regression this monitor fixes."""
     try:
         r = subprocess.run([PY, os.path.join(VENDORS, "snaptrade_holdings.py")],
                            capture_output=True, text=True, timeout=60)
-        if r.returncode != 0 or not r.stdout.strip():
-            return None
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if r.returncode != 0:
+        if "ModuleNotFoundError" in r.stderr or "ImportError" in r.stderr:
+            raise RuntimeError(
+                f"snaptrade_holdings.py could not import its deps under {PY}. Run the "
+                "monitor with the venv carrying the SnapTrade SDK + python-dotenv "
+                f"(see requirements.txt), not a bare interpreter.\n{r.stderr.strip()}")
+        return None
+    if not r.stdout.strip():
+        return None
+    try:
         return held_from_holdings(json.loads(r.stdout))
-    except Exception:
+    except json.JSONDecodeError:
         return None
 
 
