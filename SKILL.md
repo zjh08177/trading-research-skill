@@ -283,7 +283,7 @@ everything above reads exactly as today.
 |---|---|
 | Judge 1 / 2 / 3 (panel) | `gpt-5.5-extra-high` / `claude-opus-4-8-thinking-max` / `glm-5.2-high` |
 | Judge 4 / 5 (escalation) | `composer-2.5` / `grok-4.3` |
-| Analysts, debate, risk officer, QA-fix | `composer-2.5` |
+| Analysts, debate, risk officer, QA-fix | `gpt-5.5-medium` |
 | Writer | `claude-opus-4-8-thinking-high` |
 
 All slots bill the Cursor subscription — no Anthropic API/Max usage. Slugs churn:
@@ -328,10 +328,10 @@ Retry ladder (precedence pinned; each judge's exit code + stderr also append to
 | Claude Code facility | Cursor mapping |
 |---|---|
 | Run dir | ABSOLUTE root pinned: `~/.claude/skills/trading-research/runs/<TICKER>-<date>-<hhmm>/` — a foreign-cwd Cursor session must never drop `15-position.*` into an ungitignored project tree. |
-| Agent tool: analysts ×3 ∥, debate 2 waves, risk officer | `cursor-agent -p --model composer-2.5 --mode plan --trust --workspace "$dir"` per role card; analysts backgrounded + `wait`; debate waves sequential; same artifact read-sets as the Pipeline stage table. |
+| Agent tool: analysts ×3 ∥, debate 2 waves, risk officer | `cursor-agent -p --model gpt-5.5-medium --mode plan --trust --workspace "$dir"` per role card; analysts backgrounded + `wait`; debate waves sequential; same artifact read-sets as the Pipeline stage table. |
 | Judges (Stage 5) | see Judge invocation above. |
 | Writer | same pattern, `--model claude-opus-4-8-thinking-high`; the writer alone reads `15-position.*` (invariant 12 unchanged); orchestrator saves stdout to `60-report.md`. |
-| QA loop | `qa_check.py` mechanical as-is; fix pass via `composer-2.5`; loop unchanged. |
+| QA loop | `qa_check.py` mechanical as-is; fix pass via `gpt-5.5-medium`; loop unchanged. |
 | Artifact tool (Stage 8 deliverable) | does not exist on Cursor → render house HTML (`render_report.py`), save to `reports/single-ticker/<TICKER>/` + open the local file; footer notes `artifact: local-html`. |
 | stock-market-pro skill, LunarCrush MCP (P6), Crypto.com MCP | unavailable on Cursor → straight to `DEGRADED`/`MISSING` per the existing data-gap rules; crypto tickers out of scope (R4). |
 | AskUserQuestion | ask in chat. |
