@@ -13,9 +13,9 @@ The written JSON is live position data: it is git-ignored in the vault and never
 Artifact-published (R4).
 
 Usage: snapshot_holdings.py <holdings_history_dir> [asof_date]
-Env (vendor invocation, matching the skill's <UPSTREAM>/.venv convention):
-  SNAPTRADE_HOLDINGS_PY   quant-engine venv python (default pinned below)
-  SNAPTRADE_HOLDINGS_CLI  holdings CLI path        (default pinned below)
+Env (vendor invocation, matching the skill-venv convention):
+  SNAPTRADE_HOLDINGS_PY   skill venv python (default pinned below)
+  SNAPTRADE_HOLDINGS_CLI  holdings CLI path (default pinned below)
 """
 import datetime
 import json
@@ -24,10 +24,9 @@ import subprocess
 import sys
 
 SCHEMA = 1
-DEFAULT_PY = ("/Users/bytedance/Work/sidekicks/tradingagents-workspace/"
-              "quant-engine-skill/.venv/bin/python")
-DEFAULT_CLI = ("/Users/bytedance/Work/sidekicks/tradingagents-workspace/"
-               "quant-engine-skill/scripts/vendors/snaptrade_holdings.py")
+DEFAULT_PY = "/Users/bytedance/.claude/skills/trading-research/.venv/bin/python"
+DEFAULT_CLI = ("/Users/bytedance/.claude/skills/trading-research/"
+               "scripts/vendors/snaptrade_holdings.py")
 
 
 def build_envelope(vendor, asof_date, fetched_at):

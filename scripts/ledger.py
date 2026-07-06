@@ -73,7 +73,7 @@ def sidecar_path(main_path):
 
 
 def _schwab_close(symbol, iso_date):
-    """Default price fn: settled close via schwab_bars.py (upstream venv). Returns
+    """Default price fn: settled close via schwab_bars.py (skill venv). Returns
     None on any failure — resolve then skips the row and retries a later run."""
     try:
         r = subprocess.run(

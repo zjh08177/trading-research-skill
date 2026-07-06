@@ -10,9 +10,8 @@ import subprocess
 import sys
 import statistics
 
-UP = "/Users/bytedance/Work/sidekicks/tradingagents-workspace/TradingAgents-upstream"
-PY = UP + "/.venv/bin/python"
 SK = "/Users/bytedance/.claude/skills/trading-research"
+PY = SK + "/.venv/bin/python"
 V = SK + "/scripts/vendors"
 RUNS = SK + "/runs"
 LEDGER = ("/Users/bytedance/Library/Mobile Documents/iCloud~md~obsidian/Documents/"

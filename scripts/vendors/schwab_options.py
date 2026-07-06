@@ -1,4 +1,4 @@
-"""P4 options facts from the Schwab chains endpoint (via TradingAgents-upstream).
+"""P4 options facts from the Schwab chains endpoint (via the vendored dataflows).
 
 IV rank is NOT obtainable from a chain snapshot; emits honest substitutes:
 ATM IV near, IV term structure, put/call volume+OI ratios, notable OI, is_delayed.

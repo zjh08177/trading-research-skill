@@ -1,9 +1,9 @@
 """Self-contained Unusual Whales transport for the trading-research skill.
 
-Deliberately standalone: it does NOT import the quant-engine-skill SSOT (which
-now couples to that skill's ``engine.cli`` package) nor this skill's ``_common``
-(which drags in dotenv + the upstream path). It carries its own tiny plumbing so
-the P8 options CLI has one dependency-light seam.
+Deliberately standalone: it does NOT import the quant-engine SSOT (which
+couples to that skill's ``engine.cli`` package) nor this skill's ``_common``
+(which drags in dotenv + the vendored closure). It carries its own tiny
+plumbing so the P8 options CLI has one dependency-light seam.
 
 Loads the API key from ``~/.config/tradingagents/unusualwhales.env`` (override
 via ``UNUSUALWHALES_ENV``); never hardcode or echo the key. Requests carry a

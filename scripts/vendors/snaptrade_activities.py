@@ -18,8 +18,8 @@ Exit: 0 ok · 2 config/auth · 3 no-data/bad-request · 4 rate-limit · 1 other.
 
 Usage: snaptrade_activities.py [--start YYYY-MM-DD] [--end YYYY-MM-DD]
                                [--account ID] [--type TYPE]
-Run under the quant-engine venv:
-  <workspace>/quant-engine-skill/.venv/bin/python snaptrade_activities.py ...
+Run under the skill venv:
+  <SKILL_DIR>/.venv/bin/python snaptrade_activities.py ...
 """
 import argparse
 import datetime

@@ -6,7 +6,7 @@ See vault `Projects/personal/tradingagents/v2-skillify/impl-plan/impl-plan-repor
 
 | Script | Role |
 |---|---|
-| `snapshot_holdings.py` | Write the day's holdings snapshot (the single holdings SSOT) to `reports/portfolio/holdings-history/YYYY-MM-DD.json` — subprocesses the SnapTrade holdings CLI under the quant-engine venv, wraps stdout verbatim in a dated envelope, iCloud-safe write. Args: `<holdings_history_dir> [asof]`. Env: `SNAPTRADE_HOLDINGS_PY` / `SNAPTRADE_HOLDINGS_CLI`. |
+| `snapshot_holdings.py` | Write the day's holdings snapshot (the single holdings SSOT) to `reports/portfolio/holdings-history/YYYY-MM-DD.json` — subprocesses the SnapTrade holdings CLI under the skill venv, wraps stdout verbatim in a dated envelope, iCloud-safe write. Args: `<holdings_history_dir> [asof]`. Env: `SNAPTRADE_HOLDINGS_PY` / `SNAPTRADE_HOLDINGS_CLI`. |
 | `portfolio_delta.py` | Diff the two latest snapshots into New/Exited/Added/Trimmed rows and grade them against the ledger rating + fired monitor triggers (§3.1 adherence matrix). Args: `<holdings_dir> <ledger.jsonl> <sidecar_dir> <out_md>`. Emits `delta-<date>.{md,json}`. |
 | `classify_holdings.py` | Split a SnapTrade holdings dump into the analyzable deep-dive set (drop cash MMFs/junk) + a sector map; emit `classmap.json`. |
 | `build_datapack.py` | Per equity/ADR/ETF ticker: run vendor CLIs → merge → derive mcap/PE → tiingo cross-check → `10-datapack.*` + `15-position.*`. Arg: JSON `[[ticker,kind],...]`. |
