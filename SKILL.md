@@ -255,3 +255,84 @@ Single source of truth for who runs on what.
 Every report ends with a footer stating: actual N (valid votes), total agent
 count, model mix, wall-clock time, token cost, and "not financial advice." A
 thin ensemble (<3 valid votes) is disclosed as such and never presented as N≥3.
+
+## Host runtimes
+
+ADDITIVE to everything above. The whole pipeline runs unchanged on **Claude Code**
+(the default host). This section maps it onto a **Cursor** session, which has no
+Agent or Artifact tool — every agent stage becomes a `cursor-agent -p` shell call.
+A runner that is not on Cursor ignores this section; Claude Code behaviour is
+byte-identical to today.
+
+**Scope (R4):** Cursor host is **single-ticker only**. Batch/portfolio, the daily
+invalidation monitor, and crypto tickers (Crypto.com MCP) stay **claude-code-only**.
+
+**Install:** symlink `hosts/cursor-command.md` → `~/.cursor/commands/trading-research.md`.
+
+**Host detection:** the runner self-identifies; default is `host=claude-code` and
+everything above reads exactly as today.
+
+### Model slots (Cursor host) — slugs from `cursor-agent --list-models`
+
+| Stage | Model slug |
+|---|---|
+| Judge 1 / 2 / 3 (panel) | `gpt-5.5-extra-high` / `claude-opus-4-8-thinking-max` / `glm-5.2-high` |
+| Judge 4 / 5 (escalation) | `composer-2.5` / `grok-4.3` |
+| Analysts, debate, risk officer, QA-fix | `composer-2.5` |
+| Writer | `claude-opus-4-8-thinking-high` |
+
+All slots bill the Cursor subscription — no Anthropic API/Max usage. Slugs churn:
+this table is the one place to fix a renamed slot.
+
+### Judge invocation (Stage 5) — probe-verified
+
+Each judge runs in the BACKGROUND against a temp file; after `wait`, all votes are
+moved into `50-votes/` together so a later-finishing judge never reads a sibling
+vote (parallel + isolation, Claude Code parity):
+
+```bash
+# per judge n, slug $slug; NO --sandbox flag (fatal on this machine); plan mode is read-only
+{ printf 'BACKEND: cursor\nMODEL: %s\nSLOT: %s\n\n' "$slug" "$n";
+  cursor-agent -p --model "$slug" --mode plan --trust \
+    --workspace "$dir" "<judge role card + VERDICT contract>"; } \
+  > "$tmp/vote-$n.md" 2> "$tmp/vote-$n.err" &
+# after `wait`:  mv "$tmp"/vote-*.md "$dir/50-votes/"
+```
+
+- `--trust` is mandatory headless — without it: exit 1 + "Workspace Trust Required",
+  zero model output. Never pin `--sandbox` (fatal on this machine); `--mode plan`
+  already carries read-only. The judge reads the assembled bundle from `--workspace`.
+- `ensemble.py` consumes the leading `BACKEND:`/`MODEL:`/`SLOT:` header lines
+  (`MODEL:` → `judge_mix` + the `Panel:` line; `SLOT:` informational).
+- Flow unchanged: slots 1–3 → `ensemble.py tally --n-target 3` → on `escalate`
+  spawn slots 4–5 → re-run `--n-target 5`. `decide()` mechanics are as shipped.
+- Prompt = the existing judge role card + a bundle-only / no-web / no-other-files
+  clause + the exact `VERDICT:` last-line contract.
+
+Retry ladder (precedence pinned; each judge's exit code + stderr also append to
+`$dir/50-votes/judge-errors.log`; no mid-run asks):
+
+| Signal (see `.err`) | Action |
+|---|---|
+| Nonzero exit / empty stdout (slug rejected, trust, auth) | retry once → substitute `--model auto`, disclose `SUBSTITUTED(<slug>)` in the MODEL header |
+| Exit 0 but unparseable vote | respawn same slug once → drop + disclose N (existing rule) |
+| < 3 valid votes | NO-CALL (existing rule) |
+
+### Full stage mapping (host = cursor)
+
+| Claude Code facility | Cursor mapping |
+|---|---|
+| Run dir | ABSOLUTE root pinned: `~/.claude/skills/trading-research/runs/<TICKER>-<date>-<hhmm>/` — a foreign-cwd Cursor session must never drop `15-position.*` into an ungitignored project tree. |
+| Agent tool: analysts ×3 ∥, debate 2 waves, risk officer | `cursor-agent -p --model composer-2.5 --mode plan --trust --workspace "$dir"` per role card; analysts backgrounded + `wait`; debate waves sequential; same artifact read-sets as the Pipeline stage table. |
+| Judges (Stage 5) | see Judge invocation above. |
+| Writer | same pattern, `--model claude-opus-4-8-thinking-high`; the writer alone reads `15-position.*` (invariant 12 unchanged); orchestrator saves stdout to `60-report.md`. |
+| QA loop | `qa_check.py` mechanical as-is; fix pass via `composer-2.5`; loop unchanged. |
+| Artifact tool (Stage 8 deliverable) | does not exist on Cursor → render house HTML (`render_report.py`), save to vault `reports/` + open the local file; footer notes `artifact: local-html`. |
+| stock-market-pro skill, LunarCrush MCP (P6), Crypto.com MCP | unavailable on Cursor → straight to `DEGRADED`/`MISSING` per the existing data-gap rules; crypto tickers out of scope (R4). |
+| AskUserQuestion | ask in chat. |
+| Token-cost footer field | `cost: cursor-subscription (N/A)`. |
+| Vendor CLIs, `TRADING_RESEARCH_LEDGER` env | unchanged — the CLIs are cwd-independent (absolute UPSTREAM path + `.env`); the orchestrating shell exports the env var. |
+
+**Invariant 17 (Cursor host; additive to 1–16):** Cursor judges run plan-mode,
+read-only, bundle-only — a vote citing facts absent from the judge bundle is
+malformed.
