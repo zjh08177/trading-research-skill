@@ -50,6 +50,14 @@ LISTS = [
 ]
 
 HIST = {"daily": "daily", "snapshot": "snapshot", "live": "live"}
+# A cumulative-intraday (live) fact is a partial/absent read in these sessions —
+# gate it to DATA-THIN, never a full number (O8/§5 "never a full read").
+INCOMPLETE_SESSIONS = {"none", "pre-open"}
+
+
+def _gated(fact):
+    return (fact.get("history") == "live"
+            and fact.get("session_state") in INCOMPLETE_SESSIONS)
 
 
 def money(v):
@@ -113,6 +121,11 @@ def build(pack):
             fact = scalars.get(fid)
             if not isinstance(fact, dict) or fact.get("v") is None:
                 continue
+            if _gated(fact):
+                lines.append(f"- {label}: DATA-THIN [{fid}] (live · "
+                             f"session={fact.get('session_state')} — cumulative "
+                             f"intraday withheld, incomplete session)")
+                continue
             q = _qual(fact)
             if mode == "label":
                 lines.append(f"- {label}: **{fact['v']}** [{fid}] ({q})")
@@ -146,6 +159,12 @@ def build(pack):
     for fid, header, cols in LISTS:
         fact = lists.get(fid)
         if not isinstance(fact, dict) or not fact.get("v"):
+            continue
+        if _gated(fact):  # live flow list in an incomplete session -> withhold
+            lines.append("")
+            lines.append(f"**{header}** [{fid}] (live · session="
+                         f"{fact.get('session_state')}): DATA-THIN — live flow "
+                         f"withheld (incomplete session).")
             continue
         rows = fact["v"]
         tail = rows[-8:] if fid == "P8.gex_series" else rows[:12]

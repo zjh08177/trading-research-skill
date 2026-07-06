@@ -115,6 +115,28 @@ def test_data_inconsistent_surfaced():
     assert "[P8.gex_data_inconsistent]" not in R.build(pack)
 
 
+def test_live_flow_gated_when_session_incomplete():
+    # O8/EC10: cumulative-intraday live facts must gate to DATA-THIN (never a full
+    # read) when the session is none/pre-open.
+    pack = {
+        "P8.gex_net": _fact(8e8, "usd", "daily", derived=True),
+        "P8.net_prem_ticks": _fact(5000000.0, "usd", "live", session_state="none"),
+        "P8.nope": _fact(0.30, "ratio", "live", session_state="pre-open"),
+        "P8.spot_gex": _fact(1.2e8, "usd", "live", session_state="none"),
+        "P8.flow_alerts": _fact([["sweep", 420, "2026-07-10", 1200]], "list", "live",
+                                session_state="none"),
+    }
+    block = R.build(pack)
+    assert "Net premium ticks: DATA-THIN [P8.net_prem_ticks]" in block
+    assert "5,000,000" not in block                       # value withheld
+    assert "NOPE: DATA-THIN [P8.nope]" in block
+    assert "Spot GEX: DATA-THIN [P8.spot_gex]" in block
+    assert "live flow withheld" in block                  # flow_alerts gated
+    # a complete session still shows the number
+    pack["P8.net_prem_ticks"] = _fact(5000000.0, "usd", "live", session_state="mid")
+    assert "$5,000,000.00 [P8.net_prem_ticks]" in R.build(pack)
+
+
 def test_short_gamma_flip_line_explicit():
     pack = {"P8.gex_net": _fact(-500000000.0, "usd", "daily", derived=True),
             "P8.gex_regime": _fact("short-gamma", "label", "snapshot", derived=True)}
