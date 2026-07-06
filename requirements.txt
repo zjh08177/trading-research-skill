@@ -1,17 +1,17 @@
-# Runtime deps for the trading-research vendor + batch scripts.
+# Runtime deps for the trading-research skill — vendor CLIs, batch drivers, tests.
 #
-# CANONICAL INTERPRETER: the upstream TradingAgents venv
-#   <workspace>/TradingAgents-upstream/.venv
-# It already carries every package below PLUS the editable `tradingagents`
-# package that scripts/vendors/{schwab_*,edgar_fundamentals,tiingo_oracle,
-# marketaux_news}.py import. Run the FULL pipeline (monitor, quotes, packs,
-# action_plan) under that venv — a bare venv will be missing `tradingagents`.
+# CANONICAL INTERPRETER: the skill-owned venv at <SKILL_DIR>/.venv
+# (bootstrap: scripts/setup_venv.sh). The vendor CLIs import the vendored
+# `tradingagents` closure from scripts/vendors/_vendored/ — no external
+# checkout or editable install is needed. Creds load from
+# ~/.config/tradingagents/*.env (see scripts/vendors/_common.py).
 #
-# A fresh standalone venv can only run the SnapTrade-holdings path
-# (snaptrade_holdings.py), which needs just the two *-starred deps below.
+# Pins mirror the last-known-good v1 runtime freeze, except pandas:
+# 3.0.4 is yanked on PyPI (datetime segfaults), 3.0.3 is the newest safe.
 
-snaptrade-python-sdk==11.0.212   # * read-only positions SDK (imports as `snaptrade_client`)
-python-dotenv>=1.2.2             # * .env cred loading (holdings + every vendor script)
-pandas>=3.0.4
-requests>=2.34.2
-# tradingagents  — NOT on PyPI; `pip install -e` the ../TradingAgents-upstream repo.
+pandas==3.0.3
+pydantic==2.13.4
+requests==2.34.2
+python-dotenv==1.2.2
+snaptrade-python-sdk==11.0.212   # imports as `snaptrade_client`
+pytest==9.1.1

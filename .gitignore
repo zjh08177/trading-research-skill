@@ -6,3 +6,6 @@ __pycache__/
 
 # Run artifacts — contain LIVE ACCOUNT DATA (positions, $ amounts) + reports. Never commit.
 runs/
+
+# Skill-owned venv (bootstrap: scripts/setup_venv.sh)
+.venv/
