@@ -49,6 +49,17 @@ block. The computed block is context-only and never changes the rating.
 Dated forward events (earnings, product, macro), each with a date and a tagged
 or cited basis.
 
+## Dealer Positioning & Options
+
+Only when the run used `--options`. The orchestrator computes this section into
+`52-options-block.md` (render_options.py); insert it here VERBATIM under the
+markers — do not edit, re-order, or recompute. Every fact carries its
+daily/snapshot/live history tag; describe positioning and levels, never name a
+strike/expiry to trade. Omit the whole section when the run did not fetch P8.
+
+<!-- options-block: inserted verbatim, do not edit -->
+{{52-options-block.md inserted here verbatim from render_options.py — do not edit}}
+
 ## Data gaps
 
 Box every DATA GAP and MISSING(reason) marker. State what is missing and whether

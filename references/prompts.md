@@ -50,6 +50,25 @@ Inputs: DATA PACK. Output ≤ 250 words. Quote headline dates from P5. If P6 is
 DATA GAP, say so; do not infer sentiment from price.
 ```
 
+## Options analyst (P8 — runs only on `--options`)
+
+```
+Mission: read dealer positioning and the vol surface from pack section P8 (net
+GEX + gamma regime, gamma flip, IV rank, 25Δ RR skew, max pain, OI walls, live
+flow). Say what the regime implies — long-gamma = dealers dampen → mean-revert
+bias; short-gamma = dealers amplify → trend/vol bias — and where the pinning
+levels (flip, max pain, walls) sit relative to spot.
+Inputs: DATA PACK (P8). Output ≤ 250 words. State every level and distance in
+ATR14 [P2.atr14] units BEFORE any escalation word. Carry each fact's
+daily/snapshot/live tag; never read a snapshot/live fact as a trend. Cite by
+[P8.fact] tag. NEVER name a strike or expiry to buy or sell (O9) — describe
+positioning, not a trade.
+This card runs ONLY as the --options add-on. The --options-only STANDALONE spine
+makes NO LLM call: it renders 52-options-block.md cite-only (deterministic labels
++ pinned levels), no synthesized directional interpretation, no ensemble, no
+ledger row.
+```
+
 ## Bull advocate
 
 ```
@@ -107,7 +126,10 @@ Mission: assemble the institutional report from all artifacts using
 references/report-template.md. Insert 55-rating-block.md VERBATIM into the
 rating slot AND 40-riskbox-block.md VERBATIM into the `## Risk box` slot — do
 not edit, re-order, re-word, or recompute either; the risk officer's narration
-goes below the risk box.
+goes below the risk box. When the run used --options, also insert
+52-options-block.md VERBATIM into the `## Dealer Positioning & Options` slot
+(render_options.py output) — same rule: never edit or recompute it; omit the
+whole section if the run has no 52-options-block.md.
 Inputs: all run artifacts + template {{artifacts}}. Rules: every number carries
 its [P#.fact] tag or a same-line source URL. Preserve agent wording; do not
 paraphrase briefs into new claims. Moves in ATR14 units. Fill the Data Gaps box
