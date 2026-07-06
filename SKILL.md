@@ -41,18 +41,23 @@ artifacts are the only channel between stages.
 | 8 Publish + ledger | orchestrator + `scripts/ledger.py` + Artifact | — | report | HTML Artifact + vault copy (`.md`+`.html`) + ledger row |
 
 Run folder: `runs/<TICKER>-<date>-<hhmm>/`. Both `60-report.md` and `60-report.html`
-copy to the vault `reports/` folder; the ledger lives at vault `reports/ledger.jsonl`.
+copy to **`reports/single-ticker/<TICKER>/`** in the vault (options runs →
+`reports/options/<TICKER>/`; book-level monitor/action-plan/dossier →
+`reports/portfolio/`). Code state stays at the vault `reports/` root — `ledger.jsonl`,
+`levels/`, `classmap.json` are read at fixed paths; never move them. See
+`reports/_index.md` for the full layout.
 
 **Report delivery is HTML.** Markdown stays the CANONICAL artifact — the writer
 emits `60-report.md`, and `qa_check.py` + `ledger.py` parse it (all `[P#.fact]`
 cite-tag machinery depends on markdown headings/tables). After QA passes, Stage 7b
 runs `render_report.py 60-report.md` → `60-report.html` (a self-contained, styled
 page; no external assets). Stage 8 publishes that HTML via the **Artifact tool** as
-the primary deliverable and copies BOTH files to the vault. Never hand-author the
-HTML or let an agent regenerate it — the renderer is deterministic so the delivered
-page always matches the QA'd markdown byte-for-byte in content. For a portfolio/batch
-run, assemble one dossier (overview scorecard + every `60-report.md` via
-`render_report.md_to_html`) and publish it as a single Artifact.
+the primary deliverable and copies BOTH files to `reports/single-ticker/<TICKER>/`.
+Never hand-author the HTML or let an agent regenerate it — the renderer is
+deterministic so the delivered page always matches the QA'd markdown byte-for-byte
+in content. For a portfolio/batch run, assemble one dossier (overview scorecard +
+every `60-report.md` via `render_report.md_to_html`), publish it as a single
+Artifact, and copy it to `reports/portfolio/`.
 
 Resume rule: on crash, stat the artifacts in order and restart at the first
 missing file. There is no resume machinery beyond this rule.
@@ -327,7 +332,7 @@ Retry ladder (precedence pinned; each judge's exit code + stderr also append to
 | Judges (Stage 5) | see Judge invocation above. |
 | Writer | same pattern, `--model claude-opus-4-8-thinking-high`; the writer alone reads `15-position.*` (invariant 12 unchanged); orchestrator saves stdout to `60-report.md`. |
 | QA loop | `qa_check.py` mechanical as-is; fix pass via `composer-2.5`; loop unchanged. |
-| Artifact tool (Stage 8 deliverable) | does not exist on Cursor → render house HTML (`render_report.py`), save to vault `reports/` + open the local file; footer notes `artifact: local-html`. |
+| Artifact tool (Stage 8 deliverable) | does not exist on Cursor → render house HTML (`render_report.py`), save to `reports/single-ticker/<TICKER>/` + open the local file; footer notes `artifact: local-html`. |
 | stock-market-pro skill, LunarCrush MCP (P6), Crypto.com MCP | unavailable on Cursor → straight to `DEGRADED`/`MISSING` per the existing data-gap rules; crypto tickers out of scope (R4). |
 | AskUserQuestion | ask in chat. |
 | Token-cost footer field | `cost: cursor-subscription (N/A)`. |
