@@ -79,6 +79,16 @@ def test_ratio_shown_as_percent_and_raw():
     assert "0.8200 [P8.pc_ratio_vol]" in block      # genuine ratio -> raw
 
 
+def test_small_iv_rank_survives_qa_full_precision():
+    # regression: iv_rank stored round(v,2); rendering at 1dp false-failed qa's
+    # 0.5% tol for small values (3.47 -> "3.5%" -> rel 0.86%). Render must be 2dp.
+    for v in (3.47, 2.97, 4.94, 9.45):
+        pack = {"P8.iv_rank_1y": _fact(v, "pct", "snapshot")}
+        block = R.build(pack)
+        assert f"{v:.2f}% [P8.iv_rank_1y]" in block
+        assert not any(not ok for ok, m in qa.check_pairs(block, pack)), (v, block)
+
+
 def test_regime_and_event_and_skew_labels():
     block = R.build(_pack())
     assert "long-gamma" in block and "[P8.gex_regime]" in block

@@ -63,7 +63,7 @@ def _num(v, mode):
     if mode == "pct":
         return f"{v * 100:.2f}%"
     if mode == "pct_native":
-        return f"{v:.1f}%"
+        return f"{v:.2f}%"  # match uw_options round(v,2); 1dp false-fails qa <0.5% on small iv_rank
     if mode == "raw":
         return f"{v:.4f}"
     return None
