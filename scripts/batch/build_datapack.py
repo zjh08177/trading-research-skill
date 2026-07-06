@@ -79,8 +79,21 @@ def add_options(ticker, kind, facts, gaps, options):
         for g in (d.pop("P8._gaps", None) or []):
             gaps.append(f"P8 {g}")
         facts.update(d)
-        gaps.append("P4 suppressed under --options (UW P8 primary; Schwab IV "
-                    "backfills only on a named P8 gap)")
+        # D2/EC4: P8 is primary; the Schwab IV backfills ONLY when the P8 IV group
+        # itself gapped (no rank AND no IV) — other P4 fields stay suppressed.
+        if "P8.iv_rank_1y" in facts or "P8.iv_now" in facts:
+            gaps.append("P4 suppressed under --options (UW P8 is the primary "
+                        "options source)")
+        else:
+            ex2, d2, err2 = run_cli("schwab_options", ["--ticker", ticker])
+            iv = {k: v for k, v in (d2 or {}).items() if k == "P4.atm_iv_near"}
+            if iv:
+                facts.update(iv)  # src=schwab already stamped by schwab_options
+                gaps.append("P4.atm_iv_near backfilled from Schwab (src=schwab) — "
+                            "P8 IV group gapped (D2/EC4); other P4 fields suppressed")
+            else:
+                gaps.append("P8 IV group gapped and Schwab IV backfill unavailable "
+                            f"({err2 if ex2 else 'no atm_iv_near'})")
     else:
         gaps.append(f"P8 MISSING(uw_options exit {ex}: {err}); Schwab P4 fallback")
         schwab_p4()

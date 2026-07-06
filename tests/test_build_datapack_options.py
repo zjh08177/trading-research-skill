@@ -31,18 +31,34 @@ BASE = {
 }
 
 
-def test_p8_success_suppresses_p4_and_routes_gaps(monkeypatch):
+def test_p8_success_with_iv_suppresses_p4_and_routes_gaps(monkeypatch):
     rets = {**BASE, "uw_options": (0, {
         "P8.gex_net": _fct(8e8, "usd"), "P8.gex_regime": _fct("long-gamma", "label"),
+        "P8.iv_rank_1y": _fct(42.5, "pct"),
         "P8._gaps": ["DATA-THIN(flow): session pre-open"]}, "")}
     fake, calls = _fake(rets)
     monkeypatch.setattr(bd, "run_cli", fake)
     facts, gaps, degraded, xline = bd.build_facts("TSLA", "equity", options=True)
     assert "P8.gex_net" in facts and "P8.gex_regime" in facts
-    assert "schwab_options" not in calls                    # P4 suppressed
+    assert "schwab_options" not in calls                    # IV present -> P4 fully suppressed
     assert any("P4 suppressed under --options" in g for g in gaps)
     assert any("DATA-THIN(flow)" in g for g in gaps)        # P8._gaps routed
     assert "P8._gaps" not in facts                          # popped, not a fact
+
+
+def test_p8_success_missing_iv_backfills_only_iv(monkeypatch):
+    # EC4/D2: P8 succeeds but the IV group gapped -> backfill ONLY Schwab
+    # P4.atm_iv_near, leave other P4 fields suppressed.
+    rets = {**BASE, "uw_options": (0, {"P8.gex_net": _fct(8e8, "usd")}, ""),
+            "schwab_options": (0, {"P4.atm_iv_near": _fct(0.45, "ratio"),
+                                   "P4.put_call_volume_ratio": _fct(0.8, "ratio")}, "")}
+    fake, calls = _fake(rets)
+    monkeypatch.setattr(bd, "run_cli", fake)
+    facts, gaps, _, _ = bd.build_facts("TSLA", "equity", options=True)
+    assert "schwab_options" in calls
+    assert "P4.atm_iv_near" in facts                        # IV backfilled
+    assert "P4.put_call_volume_ratio" not in facts          # other P4 fields stay suppressed
+    assert any("backfilled from Schwab" in g for g in gaps)
 
 
 def test_p8_failure_falls_back_to_schwab_p4(monkeypatch):
