@@ -69,6 +69,29 @@ def test_render_contains_queue_and_provenance(tmp_path):
     assert "no new ratings" in md and "CCC" in md and "DDD" in md
 
 
+def test_main_consumes_snapshot_envelope(tmp_path):
+    """The <holdings.json> arg now points at the day's snapshot envelope (single
+    holdings SSOT); action_plan must unwrap it exactly like a raw dump."""
+    import json
+    levels = tmp_path / "levels"; levels.mkdir()
+    (levels / "AAA.json").write_text(json.dumps(REG[0]))
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(json.dumps({"ticker": "AAA", "as_of": "2026-07-05",
+                                  "mode_rating": "Hold", "distribution": {"Hold": 5}}) + "\n")
+    raw = {"total_book": 1000.0, "n_accounts": 2,
+           "holdings": [{"symbol": "AAA", "kind": "equity", "pct_of_book": 8.0, "qty": 10}]}
+    envelope = {"kind": "holdings-snapshot", "schema": 1, "vendor": raw}
+    hold = tmp_path / "2026-07-06.json"; hold.write_text(json.dumps(envelope))
+    (tmp_path / "prices.json").write_text(json.dumps({"AAA": 105.0}))
+    (tmp_path / "cls.json").write_text(json.dumps(CLS))
+    out_md = tmp_path / "action-plan-2026-07-06.md"
+    rc = ap.main([str(levels), str(ledger), str(hold), str(tmp_path / "prices.json"),
+                  str(tmp_path / "cls.json"), str(out_md), "2026-07-06"])
+    assert rc == 0
+    md = out_md.read_text()
+    assert "AAA" in md and "$1,000" in md          # book from the unwrapped envelope
+
+
 def test_latest_ratings_skips_malformed(tmp_path):
     p = tmp_path / "ledger.jsonl"
     p.write_text('{"ticker":"AAA","as_of":"2026-07-01","mode_rating":"Sell",'

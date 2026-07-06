@@ -229,7 +229,7 @@ def main(argv=None):
 
     reg, malformed = mon.load_registry(levels_dir)
     ratings, bad = latest_ratings(ledger_p)
-    hold = json.load(open(hold_p))
+    hold = mon.load_holdings_dump(hold_p)   # accepts the day's snapshot envelope or a raw dump
     holdings_map = {h["symbol"]: h for h in hold.get("holdings", [])}
     reg, not_held = filter_registry_to_holdings(reg, holdings_map)
     prices = json.load(open(price_p))
