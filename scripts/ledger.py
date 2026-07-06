@@ -19,6 +19,7 @@ REQUIRED = ["run_id", "ticker", "date_utc", "as_of", "job", "mode_rating",
             "cost_usd", "wall_s"]
 
 DIRECTION = {"StrongSell": -1, "Sell": -1, "Hold": 0, "Buy": 1, "StrongBuy": 1}
+DEFAULT_REGIME = "claude/opus"
 SCRIPTS = Path(__file__).resolve().parent
 
 
@@ -123,16 +124,38 @@ def resolve_rows(main_rows, resolved_ids, ticker, horizon, benchmark, asof, pric
             "benchmark": benchmark, "entry_close": entry, "exit_close": exit_,
             "realized_return": realized, "bench_return": bench, "alpha": alpha,
             "mode_rating": r.get("mode_rating"), "direction": direction,
-            "hit": (alpha * direction) > 0,
+            "hit": (alpha * direction) > 0, "judge_mix": r.get("judge_mix"),
         })
     return new, skipped
+
+
+def regime_key(judge_mix):
+    """Calibration regime for a resolved row's judge panel. Absent/empty judge_mix
+    is the legacy all-opus Claude Code panel; otherwise the sorted set of models
+    that actually voted (a substituted slot is its own regime, by design)."""
+    if not judge_mix:
+        return DEFAULT_REGIME
+    return "+".join(sorted(set(judge_mix)))
+
+
+def _calib_line(rows, regime=None):
+    n = len(rows)
+    hit_rate = 100.0 * sum(1 for r in rows if r.get("hit")) / n
+    mean_alpha = 100.0 * sum(r["alpha"] for r in rows) / n
+    horizon = rows[-1].get("horizon_td", "?")
+    bench = rows[-1].get("benchmark", "SPY")
+    label = f" [{regime}]" if regime else ""
+    return (f"Resolved calls{label} (N={n}): hit-rate {hit_rate:.0f}% · "
+            f"mean alpha {mean_alpha:+.1f}% (vs {bench}, {horizon}td).")
 
 
 def calibration_footer(main_path, ticker, before):
     """Aggregate hit-rate + mean alpha from the sidecar, look-ahead-guarded on
     resolution_date STRICTLY < `before` (a resolution dated >= as_of would leak
-    post-as_of prices). Deterministic neutral aggregate, never per-call. Returns
-    '' when nothing qualifies."""
+    post-as_of prices). Deterministic neutral aggregate, never per-call. Regime-
+    aware: one line per judge_mix regime so a mixed Cursor panel never blends into
+    the opus-only rate that feeds P7. A pure-legacy sidecar keeps the original bare
+    single line. Returns '' when nothing qualifies."""
     side = sidecar_path(main_path)
     if not side.exists():
         return ""
@@ -150,13 +173,13 @@ def calibration_footer(main_path, ticker, before):
             rows.append(r)
     if not rows:
         return ""
-    n = len(rows)
-    hit_rate = 100.0 * sum(1 for r in rows if r.get("hit")) / n
-    mean_alpha = 100.0 * sum(r["alpha"] for r in rows) / n
-    horizon = rows[-1].get("horizon_td", "?")
-    bench = rows[-1].get("benchmark", "SPY")
-    return (f"\nResolved calls (N={n}): hit-rate {hit_rate:.0f}% · "
-            f"mean alpha {mean_alpha:+.1f}% (vs {bench}, {horizon}td).\n")
+    regimes = {}
+    for r in rows:
+        regimes.setdefault(regime_key(r.get("judge_mix")), []).append(r)
+    if set(regimes) == {DEFAULT_REGIME}:              # legacy-only: unchanged format
+        return "\n" + _calib_line(regimes[DEFAULT_REGIME]) + "\n"
+    lines = [_calib_line(regimes[k], regime=k) for k in sorted(regimes)]
+    return "\n" + "\n".join(lines) + "\n"
 
 
 def cmd_append(args):
