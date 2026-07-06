@@ -111,8 +111,9 @@ in `10-datapack.md`. Flag any section past its staleness threshold as `STALE`.
 | P7 | track record | `ledger.py read --ticker X --before <as_of>` | guard is code, not prose |
 | P8 | dealer GEX + gamma regime/flip, IV rank/skew/term, max pain, OI walls, live flow (`--options` only) | `vendors/uw_options.py` (Unusual Whales); suppresses P4 on success | per-fact daily/snapshot; live facts session-gated |
 
-Vendor CLIs: run `<UPSTREAM>/.venv/bin/python scripts/vendors/<cli>.py --ticker X --asof <date>`
-(UPSTREAM = the TradingAgents-upstream repo). Each prints one JSON object of facts on
+Vendor CLIs: run `<SKILL_DIR>/.venv/bin/python scripts/vendors/<cli>.py --ticker X --asof <date>`
+(SKILL_DIR = this skill's repo root; bootstrap the venv once with `scripts/setup_venv.sh`).
+Each prints one JSON object of facts on
 stdout or exits nonzero with a one-line stderr reason — merge stdout objects into
 `10-datapack.json` as-is. Nonzero exit → retry once → fall back per the table and
 stamp `DEGRADED(P#, reason)`. List-valued facts (P4.iv_term, P4.notable_oi,
@@ -126,7 +127,7 @@ range/vol; refuses a past `--asof` so back-dated runs use settled bars) and add
 
 ## Position (Stage 1b, current-day only)
 
-Run `<UPSTREAM>/.venv/bin/python scripts/vendors/snaptrade_account.py --ticker X --asof <date>`
+Run `<SKILL_DIR>/.venv/bin/python scripts/vendors/snaptrade_account.py --ticker X --asof <date>`
 after the pack — the cross-broker source (Robinhood, Schwab, Fidelity, … via
 SnapTrade). It aggregates the LONG holding across every linked account. Its `H1`
 facts (qty, avg cost, unrealized P/L, % of book, plus `H1.brokers` and
@@ -161,7 +162,7 @@ ONCE and reuses it, so same-day artifacts can never disagree:
 
 1. `scripts/batch/snapshot_holdings.py <reports>/portfolio/holdings-history` writes the
    day's snapshot (`YYYY-MM-DD.json`) — the single holdings SSOT. It subprocesses the
-   SnapTrade holdings CLI under the quant-engine venv (`SNAPTRADE_HOLDINGS_PY` /
+   SnapTrade holdings CLI under the skill venv (`SNAPTRADE_HOLDINGS_PY` /
    `SNAPTRADE_HOLDINGS_CLI` override the pinned defaults); vendor exit 2/3/4 pass through,
    a partial book writes + DEGRADEs and never same-day-downgrades.
 2. Point the monitor and action-plan at that file instead of a fresh fetch:
@@ -177,7 +178,7 @@ published via the Artifact tool — that flow is for reports only.
 
 ## Risk box (computed)
 
-Before spawning the risk officer, run `<UPSTREAM>/.venv/bin/python scripts/risk_box.py
+Before spawning the risk officer, run `<SKILL_DIR>/.venv/bin/python scripts/risk_box.py
 10-datapack.json > 40-riskbox-block.md`. It computes the adverse move (ATR14 / 30d σ
 multiples), the today-move/ATR ratio, the SMA50±ATR invalidation anchor, and a
 NORMAL/ABNORMAL context flag from pack facts — the numbers the officer used to
@@ -194,7 +195,7 @@ standing options source until a run opts in.
 
 **`--options` (add-on)** — single-ticker orchestrator flow:
 
-1. **Stage 1**: after the P1/P2 pack is built, run `<UPSTREAM>/.venv/bin/python
+1. **Stage 1**: after the P1/P2 pack is built, run `<SKILL_DIR>/.venv/bin/python
    scripts/vendors/uw_options.py --ticker X --spot <P1.last, fallback P1.price>
    --atr <P2.atr14> [--earnings <P5 date if resolved>]`. Merge every `P8.*` fact
    (scalars AND context lists) into `10-datapack.json` + a `## P8` section of
@@ -357,7 +358,7 @@ Retry ladder (precedence pinned; each judge's exit code + stderr also append to
 | stock-market-pro skill, LunarCrush MCP (P6), Crypto.com MCP | unavailable on Cursor → straight to `DEGRADED`/`MISSING` per the existing data-gap rules; crypto tickers out of scope (R4). |
 | AskUserQuestion | ask in chat. |
 | Token-cost footer field | `cost: cursor-subscription (N/A)`. |
-| Vendor CLIs, `TRADING_RESEARCH_LEDGER` env | unchanged — the CLIs are cwd-independent (absolute UPSTREAM path + `.env`); the orchestrating shell exports the env var. |
+| Vendor CLIs, `TRADING_RESEARCH_LEDGER` env | unchanged — the CLIs are cwd-independent (vendored closure + `~/.config/tradingagents` creds); the orchestrating shell exports the env var. |
 
 **Invariant 17 (Cursor host; additive to 1–16):** Cursor judges run plan-mode,
 read-only, bundle-only — a vote citing facts absent from the judge bundle is
