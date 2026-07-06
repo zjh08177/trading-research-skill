@@ -25,10 +25,59 @@ CRYPTO_REST = "https://api.crypto.com/exchange/v1/public/get-tickers"
 
 
 def load_registry(levels_dir):
-    reg = []
+    """Load every published levels file. SKIP any file missing the ticker envelope
+    (a raw 56-levels.json hand-dropped here — without ticker/kind/asof — would
+    otherwise KeyError in the scan loop and kill the WHOLE monitor). Returns
+    (registry, malformed_filenames)."""
+    reg, malformed = [], []
     for f in sorted(glob.glob(os.path.join(levels_dir, "*.json"))):
-        reg.append(json.load(open(f)))
-    return reg
+        try:
+            e = json.load(open(f))
+        except Exception:
+            malformed.append(os.path.basename(f))
+            continue
+        if not isinstance(e, dict) or not e.get("ticker"):
+            malformed.append(os.path.basename(f))
+            continue
+        reg.append(e)
+    return reg, malformed
+
+
+def held_from_holdings(holdings):
+    """Set of held symbols from a snaptrade_holdings.py dump
+    ({'holdings':[{'symbol',...}]})."""
+    return {h.get("symbol") for h in (holdings or {}).get("holdings", []) if h.get("symbol")}
+
+
+def fetch_held():
+    """Current portfolio symbols via snaptrade_holdings.py (live, read-only). Returns
+    a set, or None when holdings can't be determined (auth/exit!=0) so the caller
+    falls back to the full registry instead of silently monitoring nothing."""
+    try:
+        r = subprocess.run([PY, os.path.join(VENDORS, "snaptrade_holdings.py")],
+                           capture_output=True, text=True, timeout=60)
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        return held_from_holdings(json.loads(r.stdout))
+    except Exception:
+        return None
+
+
+def filter_to_held(reg, held, keep_crypto=True):
+    """Scope the registry to names the user CURRENTLY HOLDS — ad-hoc analyses (a
+    levels file for an unheld name like UNH) are dropped. Crypto is kept regardless:
+    registry crypto entries only come from the held-crypto batch, and crypto's
+    holdings source differs from SnapTrade. held=None -> no filter (scan all).
+    Returns (kept, dropped_tickers)."""
+    if held is None:
+        return reg, []
+    kept, dropped = [], []
+    for e in reg:
+        if (keep_crypto and e.get("kind") == "crypto") or e.get("ticker") in held:
+            kept.append(e)
+        else:
+            dropped.append(e.get("ticker"))
+    return kept, dropped
 
 
 def crypto_prices():
@@ -76,13 +125,24 @@ def evaluate(entry, price):
 
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
+    scan_all = "--all" in argv
+    argv = [a for a in argv if a != "--all"]
     if not argv:
-        sys.stderr.write("usage: monitor_invalidations.py <levels_dir> [out_md] [asof]\n")
+        sys.stderr.write("usage: monitor_invalidations.py <levels_dir> [out_md] [asof] [--all]\n")
         return 2
     levels_dir = argv[0]
     out_md = argv[1] if len(argv) > 1 else None
     asof = argv[2] if len(argv) > 2 else ""
-    reg = load_registry(levels_dir)
+    reg, malformed = load_registry(levels_dir)
+
+    # Scope to CURRENT holdings (the point of a monitor) unless --all. If holdings
+    # can't be fetched, fall back to the full registry + a loud note — never blind
+    # the monitor on a SnapTrade outage.
+    held = None if scan_all else fetch_held()
+    reg, not_held = filter_to_held(reg, held)
+    scope = ("full registry (--all)" if scan_all else
+             ("HOLDINGS UNAVAILABLE — scanned full registry" if held is None else
+              f"scoped to {len(held)} current holdings"))
     cp = crypto_prices()
 
     fired, unavailable = [], []
@@ -94,9 +154,16 @@ def main(argv=None):
             elif r["fired"]:
                 fired.append(r)
 
+    skips = []
+    if not_held:
+        skips.append(f"{len(not_held)} not-held skipped ({', '.join(t for t in not_held if t)})")
+    if malformed:
+        skips.append(f"{len(malformed)} malformed skipped ({', '.join(malformed)})")
+    if unavailable:
+        skips.append(f"{len(unavailable)} price-unavailable ({', '.join(unavailable)})")
     lines = [f"# Invalidation monitor — {asof or 'live'}", "",
-             f"Scanned **{len(reg)}** holdings · **{len(fired)}** triggers fired"
-             + (f" · {len(unavailable)} price-unavailable ({', '.join(unavailable)})" if unavailable else "") + ".", ""]
+             f"Scanned **{len(reg)}** holdings ({scope}) · **{len(fired)}** triggers fired"
+             + ("" if not skips else " · " + " · ".join(skips)) + ".", ""]
     if fired:
         lines += ["| Holding | Dir | Price | Trigger | Basis | Action |",
                   "|---|---|---|---|---|---|"]
