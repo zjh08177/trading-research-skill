@@ -137,3 +137,43 @@ def test_session_state_stale_on_weekend():
     data = {"stock-state": {"market_time": "r", "tape_time": "2026-07-02T19:59:40Z"}}
     F, _ = build(data, spot=100)  # run_asof is today (> 2026-07-02) -> stale
     assert F["P8.session_state"]["v"] == "none"
+
+
+def _today():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def test_event_inclusive_when_front_expiry_spans_earnings():
+    # EC12 positive: expiry >= earnings >= run_asof -> event-inclusive.
+    data = {"volatility/term-structure": [{"date": _today(), "expiry": "2027-01-15",
+                                           "dte": 30, "implied_move_perc": "0.06"}]}
+    F, _ = build(data, spot=100, earnings="2026-08-01")
+    assert F["P8.implied_move_front"]["event"] == "event-inclusive"
+
+
+def test_session_early_before_1030():
+    data = {"stock-state": {"market_time": "r", "tape_time": f"{_today()}T09:31:00Z"}}
+    F, _ = build(data, spot=100)
+    assert F["P8.session_state"]["v"] == "early"
+
+
+def test_session_close_after_1530():
+    data = {"stock-state": {"market_time": "r", "tape_time": f"{_today()}T15:45:00Z"}}
+    F, _ = build(data, spot=100)
+    assert F["P8.session_state"]["v"] == "close"
+
+
+def test_session_pre_open():
+    data = {"stock-state": {"market_time": "pm", "tape_time": f"{_today()}T08:00:00Z"}}
+    F, _ = build(data, spot=100)
+    assert F["P8.session_state"]["v"] == "pre-open"
+
+
+def test_live_fact_carries_session_stamp():
+    # O8: a live fact gates via its session_state stamp.
+    data = {"stock-state": {"market_time": "pm", "tape_time": f"{_today()}T08:00:00Z"},
+            "nope": [{"date": _today(), "nope": "0.12"}]}
+    F, _ = build(data, spot=100)
+    assert F["P8.nope"]["history"] == "live"
+    assert F["P8.nope"]["session_state"] == "pre-open"
