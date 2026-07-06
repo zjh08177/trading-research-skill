@@ -115,7 +115,7 @@ def build(ticker, spot, atr, earnings, fetch):
         if crossings:
             flip = round(min(crossings, key=lambda x: abs(x - spot)), 2)
             F["P8.flip_level"] = fct(flip, "price", "snapshot", True, asof=gs_asof)
-            F["P8.dist_flip"] = fct(round((spot - flip) / spot, 4), "pct", "snapshot", True, asof=gs_asof)
+            F["P8.dist_flip"] = fct(round((spot - flip) / spot, 4), "ratio", "snapshot", True, asof=gs_asof)
         walls = sorted(pts, key=lambda p: abs(p[1]), reverse=True)[:8]
         F["P8.gex_by_strike"] = fct([[k, round(v, 2)] for k, v in walls], "list", "snapshot", asof=gs_asof)
 
@@ -148,7 +148,7 @@ def build(ticker, spot, atr, earnings, fetch):
         if fr:
             spans = bool(earnings and str(fr.get("expiry", "")) >= str(earnings) >= run_asof)
             note = "event-inclusive" if spans else ("event-status-unknown" if not earnings else "no-event")
-            fac = fct(round(f(fr.get("implied_move_perc")), 4), "pct", "snapshot", asof=fr.get("date"))
+            fac = fct(round(f(fr.get("implied_move_perc")), 4), "ratio", "snapshot", asof=fr.get("date"))
             fac["event"] = note
             F["P8.implied_move_front"] = fac
         F["P8.iv_term"] = fct([[r.get("expiry"), round(f(r.get("volatility")), 4)] for r in ts], "list", "snapshot")
@@ -188,12 +188,12 @@ def build(ticker, spot, atr, earnings, fetch):
             k = _strike_of(cw)
             if k:
                 F["P8.call_wall"] = fct(round(k, 2), "price", "snapshot", asof=run_asof)
-                F["P8.dist_call_wall"] = fct(round((k - spot) / spot, 4), "pct", "snapshot", True)
+                F["P8.dist_call_wall"] = fct(round((k - spot) / spot, 4), "ratio", "snapshot", True)
         if pw is not None:
             k = _strike_of(pw)
             if k:
                 F["P8.put_wall"] = fct(round(k, 2), "price", "snapshot", asof=run_asof)
-                F["P8.dist_put_wall"] = fct(round((k - spot) / spot, 4), "pct", "snapshot", True)
+                F["P8.dist_put_wall"] = fct(round((k - spot) / spot, 4), "ratio", "snapshot", True)
 
     eb = fetch.get(f"/api/stock/{ticker}/expiry-breakdown", "oi_walls")
     if eb:

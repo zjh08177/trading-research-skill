@@ -62,6 +62,7 @@ def test_golden_long_gamma():
     assert abs(F["P8.flip_level"]["v"] - 82.5) < 0.01          # single crossing at 82.5
     assert F["P8.gex_regime"]["v"] == "long-gamma"             # |100-82.5|=17.5 > band 15
     assert F["P8.gex_data_inconsistent"]["v"] is False
+    assert F["P8.dist_flip"]["unit"] == "ratio"                # shown as %, so /100 qa rule must fire
 
 
 def test_multimodal_picks_nearest_spot():
