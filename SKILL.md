@@ -154,6 +154,27 @@ passing the run's `as_of` (the look-ahead guard). Append one row per run
 (including aborts) with `ledger.py append`; on write failure it prints the row
 with a MANUAL-APPEND banner and exits 2 — append that row by hand, never skip.
 
+## Portfolio history (daily snapshot → delta, monitor SSOT)
+
+Track the book's composition over time, zero-LLM. The daily runbook fetches holdings
+ONCE and reuses it, so same-day artifacts can never disagree:
+
+1. `scripts/batch/snapshot_holdings.py <reports>/portfolio/holdings-history` writes the
+   day's snapshot (`YYYY-MM-DD.json`) — the single holdings SSOT. It subprocesses the
+   SnapTrade holdings CLI under the quant-engine venv (`SNAPTRADE_HOLDINGS_PY` /
+   `SNAPTRADE_HOLDINGS_CLI` override the pinned defaults); vendor exit 2/3/4 pass through,
+   a partial book writes + DEGRADEs and never same-day-downgrades.
+2. Point the monitor and action-plan at that file instead of a fresh fetch:
+   `monitor_invalidations.py <levels> <out_md> <asof> --holdings <snapshot>` and
+   `action_plan.py ... <snapshot> ...` (both unwrap the envelope).
+3. `scripts/batch/portfolio_delta.py <holdings-history> <ledger.jsonl> <reports>/portfolio
+   <out_md>` diffs the two latest snapshots into adds/trims/exits and grades each against
+   the ledger rating + fired monitor triggers (`monitor-<date>.json` sidecars).
+
+**Position data never leaves disk (R4).** Snapshots, deltas, and activities are the live
+book: they are git-ignored in the vault (`holdings-history/`, `activities/`) and are NEVER
+published via the Artifact tool — that flow is for reports only.
+
 ## Risk box (computed)
 
 Before spawning the risk officer, run `<UPSTREAM>/.venv/bin/python scripts/risk_box.py
