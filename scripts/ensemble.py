@@ -15,20 +15,42 @@ LABEL = {v: k for k, v in NOTCH.items()}
 VERDICT_RE = re.compile(
     r"VERDICT:\s*(StrongSell|Sell|Hold|Buy|StrongBuy)\s*\|\s*"
     r"CONVICTION:\s*(\d+)\s*\|\s*WHY:\s*(.+?)\s*$")
+HEADER_RE = re.compile(r"(BACKEND|MODEL|SLOT):\s*(.*)$")
+DEFAULT_MODEL = "claude/opus"
+
+
+def parse_headers(lines):
+    """Consume leading BACKEND:/MODEL:/SLOT: header lines (a Cursor-host vote file
+    prefixes them; SLOT is informational). Returns (model, body_lines); model
+    defaults to claude/opus when no leading MODEL: header (legacy Claude Code)."""
+    model, i = DEFAULT_MODEL, 0
+    for ln in lines:
+        m = HEADER_RE.match(ln)
+        if not m:
+            break
+        if m.group(1) == "MODEL":
+            model = m.group(2).strip() or model
+        i += 1
+    return model, lines[i:]
 
 
 def parse_vote(path):
-    """Return (notch, conviction, why, verbatim_line) or None if malformed."""
+    """Return (notch, conviction, why, verbatim_line, model) or None if malformed.
+    Leading header lines are consumed first; a header-only file (no VERDICT body)
+    is malformed."""
     lines = [ln.rstrip() for ln in path.read_text().splitlines() if ln.strip()]
     if not lines:
         return None
-    m = VERDICT_RE.match(lines[-1].strip())
+    model, body = parse_headers(lines)
+    if not body:
+        return None
+    m = VERDICT_RE.match(body[-1].strip())
     if not m:
         return None
     conv = int(m.group(2))
     if not 1 <= conv <= 10:
         return None
-    return (NOTCH[m.group(1)], conv, m.group(3).strip(), lines[-1].strip())
+    return (NOTCH[m.group(1)], conv, m.group(3).strip(), body[-1].strip(), model)
 
 
 def collect(votes_dir):
@@ -59,6 +81,7 @@ def mode_notch(notches):
 
 def render(votes, malformed, n_target):
     n_valid = len(votes)
+    judge_mix = [v[4] for v in votes]
     counts = Counter(v[0] for v in votes)
     spread = (max(counts) - min(counts)) if votes else 0
     decision = decide(spread, n_valid, n_target)
@@ -98,6 +121,12 @@ def render(votes, malformed, n_target):
     if malformed:
         out += ["", f"_Excluded (malformed, {len(malformed)}): "
                 + ", ".join(malformed) + "._"]
+    # Panel line renders the actual model of each valid vote (a substituted slot
+    # shows what really voted). Kept INSIDE the QA-exempt region (before the
+    # `_Actual N:` terminator) so slug digits (5.5, 4.3…) never leak to scan_untagged.
+    # Legacy all-opus panels stay unlabelled — Claude Code output is unchanged.
+    if votes and set(judge_mix) != {DEFAULT_MODEL}:
+        out += ["", f"_Panel: {' + '.join(judge_mix)}_"]
     out += ["", f"_Actual N: {n_valid} valid of {n_valid + len(malformed)} "
             f"votes (target {n_target})._"]
     decision_json = {"decision": decision, "mode": mode,
@@ -105,7 +134,7 @@ def render(votes, malformed, n_target):
                      "median_notch": median_notch, "mean_notch": mean_notch,
                      "spread": spread, "mean_conviction": mean_conv,
                      "n_valid": n_valid, "n_target": n_target,
-                     "malformed": malformed}
+                     "judge_mix": judge_mix, "malformed": malformed}
     return "\n".join(out) + "\n", decision_json
 
 
