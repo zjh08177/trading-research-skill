@@ -53,6 +53,16 @@ def test_parse_levels_marker_overrides():
     assert lv["upside"]["level"] == 112.0 and lv["upside"]["basis"] == "SMA50"
 
 
+def test_key_panel_none_margin_no_crash():
+    # an unprofitable name can carry a null operating/net margin -> must not crash
+    p = _pack()
+    p["P3.gross_margin_ttm"] = {"v": -6.9, "unit": "pct", "asof": "2026-07-05", "src": "t"}
+    p["P3.operating_margin_ttm"] = {"v": None, "unit": "pct", "asof": "2026-07-05", "src": "t"}
+    p["P3.net_margin_ttm"] = {"v": None, "unit": "pct", "asof": "2026-07-05", "src": "t"}
+    panel = rr.key_panel(p, {})
+    assert "kpanel" in panel and "n/a" in panel
+
+
 def test_marker_none_side_filled_from_derive():
     # writer emits a downside but marks upside None -> upside must be filled from derive,
     # never left None (spec E: a Hold/Sell always carries both sides with an action).

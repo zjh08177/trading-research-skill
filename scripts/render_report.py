@@ -356,8 +356,10 @@ def key_panel(pack, pos):
 
     gm, om, nm2 = _v(pack, "P3.gross_margin_ttm"), _v(pack, "P3.operating_margin_ttm"), _v(pack, "P3.net_margin_ttm")
     margins = "—"
-    if gm is not None:
-        margins = f"{gm:.1f} / {om:.0f} / {nm2:.0f}%"
+    if any(x is not None for x in (gm, om, nm2)):
+        def _m(v, d):
+            return f"{v:.{d}f}" if v is not None else "n/a"
+        margins = f"{_m(gm, 1)} / {_m(om, 0)} / {_m(nm2, 0)}%"
     fund_rows = [
         ("P/E TTM", (f"{_v(pack,'P3.pe_ttm'):.1f}×" if _v(pack, "P3.pe_ttm") else None), None, None, ""),
         ("Revenue TTM", _usd(_v(pack, "P3.revenue_ttm")),
