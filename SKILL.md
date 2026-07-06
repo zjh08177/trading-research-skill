@@ -104,6 +104,7 @@ in `10-datapack.md`. Flag any section past its staleness threshold as `STALE`.
 | P5 | ≤10 dated headlines + next earnings date | `vendors/marketaux_news.py` + WebSearch (earnings date); fallback stock-market-pro news | headline >14d dropped; event job >48h flagged |
 | P6 | sentiment (equity: news tone; crypto: LunarCrush) | LunarCrush MCP / derived | >1 day |
 | P7 | track record | `ledger.py read --ticker X --before <as_of>` | guard is code, not prose |
+| P8 | dealer GEX + gamma regime/flip, IV rank/skew/term, max pain, OI walls, live flow (`--options` only) | `vendors/uw_options.py` (Unusual Whales); suppresses P4 on success | per-fact daily/snapshot; live facts session-gated |
 
 Vendor CLIs: run `<UPSTREAM>/.venv/bin/python scripts/vendors/<cli>.py --ticker X --asof <date>`
 (UPSTREAM = the TradingAgents-upstream repo). Each prints one JSON object of facts on
@@ -158,6 +159,60 @@ compute by hand (the FIND-1 surface). A missing required fact → exit 3 (fail l
 Pass the block to the officer, who narrates around it and never recomputes it, and
 insert it VERBATIM into the report's `## Risk box` slot. The block is context-only:
 it never states an action or size and never changes the rating (invariant 16).
+
+## Options analysis (`--options` / `--options-only`)
+
+Two opt-in flags add an Unusual Whales dealer-positioning read — the **P8** pack.
+Off by default (added latency + tokens); the light Schwab P4 IV stays the
+standing options source until a run opts in.
+
+**`--options` (add-on)** — single-ticker orchestrator flow:
+
+1. **Stage 1**: after the P1/P2 pack is built, run `<UPSTREAM>/.venv/bin/python
+   scripts/vendors/uw_options.py --ticker X --spot <P1.last, fallback P1.price>
+   --atr <P2.atr14> [--earnings <P5 date if resolved>]`. Merge every `P8.*` fact
+   (scalars AND context lists) into `10-datapack.json` + a `## P8` section of
+   `10-datapack.md`; route `P8._gaps` into Data gaps and keep it in the json so
+   `render_options` echoes it in the block. On P8 success **skip
+   `schwab_options`** — P4 is suppressed; emit the Schwab IV only on a NAMED P8
+   gap, stamped `src=schwab` (D2/EC4).
+2. **Stages 2–5**: agents receive P8 verbatim and may cite positioning; the
+   emitted rating stays the equity Buy/Sell/Hold — options never change it.
+3. **Stage 6a**: the orchestrator runs `render_options.py 10-datapack.json >
+   52-options-block.md` (mirrors risk_box→`40-`, ensemble→`55-`).
+4. **Stage 6**: the writer inserts `52-options-block.md` VERBATIM into the
+   `## Dealer Positioning & Options` slot — never regenerates it (Invariant 2).
+5. **Stage 7**: `qa_check` verifies every tagged P8 scalar via `check_pairs`;
+   `scan_untagged` skips the block (context tables are untagged by design).
+6. **Stage 8**: ledger unchanged; the live-flow P8 facts already sit in
+   `10-datapack.json`, so the thesis hash stays reconstructable (D3).
+
+**`--options-only` (standalone)** — a zero-LLM spine:
+
+```
+0 scope → 1 uw_options.py --spot <quote, fallback settled close> --atr <bars ATR>
+        --earnings <P5 lookup> → render_options.py
+        → runs/<T>-<date>/options-only-<hhmm>.{md,json}  (non-scored audit artifact)
+NEVER calls an Agent, ensemble.py, or ledger.py (O2/EC2/EC8).
+```
+
+Fetch pacing: `uw_options` paces its own ~17 UW calls at ≥0.75 s (≈80/min, under
+the ~120/min ceiling); the batch driver runs tickers serially, so no cross-ticker
+burst.
+
+Options invariants (enforce alongside 1–16):
+
+| # | Rule |
+|---|---|
+| O1 | Every P8 fact stamps `daily`/`snapshot`/`live`; a snapshot/live fact is never rendered as a trend or backtest claim. |
+| O2 | `--options-only` appends NO ledger row and forces NO rating; it writes a separate non-scored audit artifact. |
+| O3 | P8 reuses `check_pairs` + the `%`→`/100` ratio rule; numbers render full-digit; list facts are context-only (never number-tagged); the only exemption is the `scan_untagged` block skip. |
+| O4 | Net GEX = call_gamma+put_gamma (UW type-signs); sign drives {long/short}-gamma → {dampen/amplify}; flip is a proximity flag, not a co-input; sign vs (spot≥flip) disagreement → `gex_data_inconsistent`. Golden-fixture verified. |
+| O5 | Front-expiry implied move is tagged event-inclusive when it spans a known earnings date; earnings absent → `event-status-unknown` + a gap, never silently event-clean. |
+| O6 | RR skew = call_IV − put_IV (negative under put skew); the fact labels direction, not just magnitude. |
+| O7 | Below a per-group data floor (min OI, ≥2 expiries, IV-rank present) the group emits `DATA-THIN(group)` — never a computed regime/rank on a degenerate payload. |
+| O8 | Every `live` fact carries a session-state; cumulative intraday metrics gate to STALE/DATA-THIN when the session is incomplete or absent. |
+| O9 | Output describes positioning and levels; it NEVER names a strike or expiry to buy or sell. |
 
 ## Ensemble tally
 
