@@ -53,13 +53,20 @@ def test_missing_price_plan():
     assert r["plan"] == "PRICE UNAVAILABLE — re-check"
 
 
+def test_filter_registry_to_current_holdings():
+    kept, dropped = ap.filter_registry_to_holdings(REG, {"AAA": HOLD["AAA"]})
+    assert [r["ticker"] for r in kept] == ["AAA"]
+    assert dropped == ["BBB"]
+
+
 def test_render_contains_queue_and_provenance(tmp_path):
     out = ap.build_rows(REG, RATINGS, HOLD, {"AAA": 111.0, "BBB": 48.0}, CLS)
     md = ap.render_md(out, "2026-07-06",
                       {"reg_asof": "2026-07-05", "book": 1000.0, "n_accounts": 2,
-                       "price_time": "t", "bad_ledger": 0, "unmonitored": "CCC"})
+                       "price_time": "t", "bad_ledger": 0, "unmonitored": "CCC",
+                       "not_held": "DDD", "malformed": ""})
     assert "## Action queue" in md and "**ACT — Add" in md
-    assert "no new ratings" in md and "CCC" in md
+    assert "no new ratings" in md and "CCC" in md and "DDD" in md
 
 
 def test_latest_ratings_skips_malformed(tmp_path):

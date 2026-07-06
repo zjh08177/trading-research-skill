@@ -111,6 +111,19 @@ def build_rows(reg, ratings, holdings_map, prices, classmap):
     return rows
 
 
+def filter_registry_to_holdings(reg, holdings_map):
+    """Keep only registry entries for symbols in the current holdings dump."""
+    held_symbols = set(holdings_map)
+    kept, not_held = [], []
+    for entry in reg:
+        ticker = entry.get("ticker")
+        if ticker in held_symbols:
+            kept.append(entry)
+        else:
+            not_held.append(ticker)
+    return kept, sorted(t for t in not_held if t)
+
+
 def _lvl_cell(s):
     if not s:
         return "—"
@@ -196,6 +209,10 @@ def render_md(rows, asof, meta):
           ]
     if meta.get("unmonitored"):
         L.append(f"- Unmonitored holdings (no levels registry entry): {meta['unmonitored']}.")
+    if meta.get("not_held"):
+        L.append(f"- Registry entries skipped because not currently held: {meta['not_held']}.")
+    if meta.get("malformed"):
+        L.append(f"- Malformed registry entries skipped: {meta['malformed']}.")
     L += ["", "---", "*Deterministic monitor artifact — no LLM judgment ran. "
           "Decision support only; not financial advice.*", ""]
     return "\n".join(L)
@@ -210,10 +227,11 @@ def main(argv=None):
     levels_dir, ledger_p, hold_p, price_p, class_p, out_md, asof = argv[:7]
     price_time = argv[7] if len(argv) > 7 else "snapshot"
 
-    reg = mon.load_registry(levels_dir)
+    reg, malformed = mon.load_registry(levels_dir)
     ratings, bad = latest_ratings(ledger_p)
     hold = json.load(open(hold_p))
     holdings_map = {h["symbol"]: h for h in hold.get("holdings", [])}
+    reg, not_held = filter_registry_to_holdings(reg, holdings_map)
     prices = json.load(open(price_p))
     classmap = json.load(open(class_p))
 
@@ -224,7 +242,9 @@ def main(argv=None):
     meta = {"reg_asof": max((e.get("asof", "?") for e in reg), default="?"),
             "book": hold.get("total_book", 0.0), "n_accounts": hold.get("n_accounts", 0),
             "price_time": price_time, "bad_ledger": bad,
-            "unmonitored": ", ".join(sorted(unmon))}
+            "unmonitored": ", ".join(sorted(unmon)),
+            "not_held": ", ".join(not_held),
+            "malformed": ", ".join(malformed)}
     md = render_md(rows, asof, meta)
 
     os.makedirs(os.path.dirname(out_md), exist_ok=True)
