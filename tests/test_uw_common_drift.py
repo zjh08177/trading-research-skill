@@ -1,23 +1,30 @@
-"""Drift guard: the vendored _uw_common.py must stay byte-equal to the
-quant-engine-skill SSOT (tech-solution §1). A copy is the pragmatic install
-choice, but silent divergence of the UW transport across the two skills is a
-known multi-repo hazard — freeze it here so drift fails loud."""
+"""Self-containment guard for the vendored UW transport.
+
+The quant-engine-skill SSOT _uw_common now couples to that skill's ``engine.cli``
+package (absent here), so a byte-copy would break at import. Instead this skill
+carries a SELF-CONTAINED _uw_common; this test freezes that property — it must
+import with no cross-skill / dotenv coupling and expose the transport API. If
+someone re-copies the coupled SSOT, the import assertions fail loud."""
 import pathlib
+import sys
 
-SKILL_COPY = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "vendors" / "_uw_common.py"
-SSOT = pathlib.Path(
-    "/Users/bytedance/Work/sidekicks/tradingagents-workspace/"
-    "quant-engine-skill/scripts/vendors/_uw_common.py"
-)
+VENDORS = str(pathlib.Path(__file__).resolve().parents[1] / "scripts" / "vendors")
+if VENDORS not in sys.path:
+    sys.path.insert(0, VENDORS)
 
 
-def test_uw_common_byte_equal_to_ssot():
-    assert SKILL_COPY.exists(), f"vendored copy missing: {SKILL_COPY}"
-    if not SSOT.exists():
-        # SSOT absent on this host (e.g. CI without the sibling skill): skip, don't fail.
-        import pytest
-        pytest.skip(f"SSOT not present: {SSOT}")
-    assert SKILL_COPY.read_bytes() == SSOT.read_bytes(), (
-        "vendored _uw_common.py has DRIFTED from the quant-engine-skill SSOT; "
-        "re-copy or reconcile before shipping."
+def test_uw_common_is_self_contained():
+    src = (pathlib.Path(VENDORS) / "_uw_common.py").read_text()
+    assert "from engine " not in src and "import engine" not in src and "from engine." not in src, (
+        "vendored _uw_common re-coupled to quant-engine engine.cli — keep it standalone"
     )
+    assert "load_dotenv" not in src and "import dotenv" not in src and "import _common" not in src, (
+        "_uw_common must not drag in _common/dotenv — keep the UW seam dependency-light"
+    )
+
+
+def test_uw_common_exposes_transport_api():
+    import _uw_common as uw
+    for name in ("get_json", "data_or_die", "api_key", "emit", "fact", "write_atomic", "BASE"):
+        assert hasattr(uw, name), f"_uw_common missing {name}"
+    assert uw.BASE == "https://api.unusualwhales.com"

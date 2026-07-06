@@ -1,36 +1,32 @@
-"""Shared bootstrap for Unusual Whales vendor CLIs (read-only market data).
+"""Self-contained Unusual Whales transport for the trading-research skill.
 
-Loads the API key from the SSOT ``~/.config/tradingagents/unusualwhales.env``
-(override path via ``UNUSUALWHALES_ENV``); never hardcode or echo the key.
-Requests carry a browser-ish User-Agent — the default python-requests UA is
-blocked by Cloudflare (error 1010). ``get_json`` is the sole network seam
-(monkeypatched in tests); ``data_or_die`` maps UW statuses onto the uniform
-vendor exit codes: 0 ok / 2 config-auth / 3 no-data-or-tier-gate / 4
-rate-limit / 1 other. The tier gate matters: several endpoints (darkpool)
-serve only a rolling 90-trading-day window and answer 403
-``historic_data_access_missing`` beyond it — that is a data-window fact, not
-an auth failure, so it exits 3 with the server's boundary message.
+Deliberately standalone: it does NOT import the quant-engine-skill SSOT (which
+now couples to that skill's ``engine.cli`` package) nor this skill's ``_common``
+(which drags in dotenv + the upstream path). It carries its own tiny plumbing so
+the P8 options CLI has one dependency-light seam.
+
+Loads the API key from ``~/.config/tradingagents/unusualwhales.env`` (override
+via ``UNUSUALWHALES_ENV``); never hardcode or echo the key. Requests carry a
+browser-ish User-Agent — the default python-requests UA is blocked by Cloudflare
+(1010). ``get_json`` is the sole network seam (monkeypatched in tests).
+``data_or_die`` maps UW statuses to the uniform vendor exit codes
+(0 ok / 2 config-auth / 3 no-data-or-tier-gate / 4 rate-limit / 1 other); the
+P8 CLI uses ``get_json`` directly for per-endpoint fail-loud instead.
 """
+import json
 import os
 import sys
 import time
 from pathlib import Path
 
-# scripts/ on path so engine.cli resolves under direct CLI invocation too
-# (sys.path[0] is scripts/vendors/ when a vendor CLI runs as __main__).
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import requests
-
-from engine.cli import die, fact, write_atomic  # noqa: F401  (plumbing SSOT)
-from engine.cli import emit as _cli_emit
 
 BASE = "https://api.unusualwhales.com"
 CREDS_PATH = Path(os.environ.get(
     "UNUSUALWHALES_ENV",
     str(Path.home() / ".config" / "tradingagents" / "unusualwhales.env"),
 ))
-UA = "tradingagents-quant/1.0 (+python-requests)"
+UA = "tradingagents-research/1.0 (+python-requests)"
 RETRIES_429 = 3
 
 
@@ -49,9 +45,24 @@ def _load_env():
 _load_env()
 
 
+def fact(v, unit, asof, src):
+    return {"v": v, "unit": unit, "asof": asof, "src": src}
+
+
 def emit(obj):
-    # insertion-order stdout is this vendor family's historical byte contract
-    _cli_emit(obj, sort_keys=False)
+    print(json.dumps(obj, separators=(",", ":")))
+
+
+def die(msg, code):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def write_atomic(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(data)
+    os.replace(tmp, path)
 
 
 def api_key():
@@ -65,9 +76,8 @@ _session = None
 
 
 def get_json(path, params=None):
-    """Sole network seam. Returns (status_code, parsed_json_or_text).
-    Transient transport failures (connection reset mid-pull on long paged
-    fetches) retry with backoff before dying — a multi-hundred-call fetch
+    """Sole network seam. Returns (status_code, parsed_json_or_text). Transient
+    transport failures retry with backoff before dying — a multi-endpoint fetch
     must not be killed by one dropped socket."""
     global _session
     if _session is None:
@@ -92,8 +102,9 @@ def get_json(path, params=None):
 
 
 def data_or_die(path, params=None):
-    """GET with 429 retry; return the ``data`` array (or the raw body if the
-    response is already a list). Non-200s map to the uniform exit codes."""
+    """GET with 429 retry; return the ``data`` array (or the raw body). Non-200s
+    map to the uniform exit codes. PROCESS-FATAL — single-endpoint CLIs only;
+    uw_options uses get_json per endpoint for non-fatal partial failure."""
     for attempt in range(RETRIES_429 + 1):
         status, body = get_json(path, params)
         if status != 429:
