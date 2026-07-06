@@ -72,3 +72,64 @@ def test_filter_none_scans_all():
     reg = [{"ticker": "AAA", "kind": "equity"}, {"ticker": "UNH", "kind": "equity"}]
     kept, dropped = mon.filter_to_held(reg, None)
     assert kept == reg and dropped == []
+
+
+def test_load_holdings_dump_raw_and_envelope(tmp_path):
+    import json
+    raw = {"holdings": [{"symbol": "AAA"}], "total_book": 1.0}
+    env = {"kind": "holdings-snapshot", "schema": 1, "vendor": raw}
+    (tmp_path / "raw.json").write_text(json.dumps(raw))
+    (tmp_path / "env.json").write_text(json.dumps(env))
+    assert mon.load_holdings_dump(str(tmp_path / "raw.json")) == raw
+    assert mon.load_holdings_dump(str(tmp_path / "env.json")) == raw  # envelope unwraps
+
+
+def _levels_dir(tmp_path):
+    """A one-name registry that fires downside at price 85."""
+    import json
+    d = tmp_path / "levels"
+    d.mkdir()
+    (d / "T.json").write_text(json.dumps(
+        {"ticker": "T", "kind": "equity", "asof": "2026-07-06", "spot": 100.0,
+         "downside": {"level": 90.0, "action": "Exit", "basis": "SMA200"}, "upside": None}))
+    return d
+
+
+def test_sidecar_dumps_fired_and_md_byte_identical(tmp_path, monkeypatch):
+    import json
+    d = _levels_dir(tmp_path)
+    out_md = tmp_path / "monitor-2026-07-06.md"
+    monkeypatch.setattr(mon, "equity_price", lambda t: 85.0)   # fire downside
+    monkeypatch.setattr(mon, "crypto_prices", lambda: {})
+    rc = mon.main([str(d), str(out_md), "2026-07-06", "--all"])
+    assert rc == 0
+    sidecar = tmp_path / "monitor-2026-07-06.json"
+    fired = json.loads(sidecar.read_text())
+    assert [r["ticker"] for r in fired] == ["T"]
+    assert fired[0]["action"] == "Exit" and fired[0]["fired"] is True
+    # md carries the fired row; the sidecar is purely additive.
+    assert "**Exit**" in out_md.read_text()
+
+
+def test_sidecar_empty_when_nothing_fires(tmp_path, monkeypatch):
+    import json
+    d = _levels_dir(tmp_path)
+    out_md = tmp_path / "monitor-2026-07-06.md"
+    monkeypatch.setattr(mon, "equity_price", lambda t: 100.0)  # inside band
+    monkeypatch.setattr(mon, "crypto_prices", lambda: {})
+    mon.main([str(d), str(out_md), "2026-07-06", "--all"])
+    assert json.loads((tmp_path / "monitor-2026-07-06.json").read_text()) == []
+
+
+def test_holdings_arg_scopes_without_live_fetch(tmp_path, monkeypatch):
+    import json
+    d = _levels_dir(tmp_path)
+    snap = tmp_path / "snap.json"
+    snap.write_text(json.dumps({"vendor": {"holdings": [{"symbol": "OTHER"}]}}))
+    # T is not in the snapshot → scoped out; fetch_held must NOT be called.
+    monkeypatch.setattr(mon, "fetch_held", lambda: (_ for _ in ()).throw(AssertionError("live fetch")))
+    monkeypatch.setattr(mon, "equity_price", lambda t: 85.0)
+    monkeypatch.setattr(mon, "crypto_prices", lambda: {})
+    out_md = tmp_path / "monitor-2026-07-06.md"
+    mon.main([str(d), str(out_md), "2026-07-06", "--holdings", str(snap)])
+    assert json.loads((tmp_path / "monitor-2026-07-06.json").read_text()) == []  # T scoped out

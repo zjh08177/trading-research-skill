@@ -49,6 +49,16 @@ def held_from_holdings(holdings):
     return {h.get("symbol") for h in (holdings or {}).get("holdings", []) if h.get("symbol")}
 
 
+def load_holdings_dump(path):
+    """Load a holdings dump from a file that is EITHER a raw snaptrade_holdings.py
+    dump ({'holdings':[...]}) OR a snapshot_holdings.py envelope
+    ({'vendor':{'holdings':[...]}}). The daily snapshot is the single holdings
+    SSOT, so both the monitor and action_plan read the same file — unwrap the
+    envelope's verbatim vendor payload when present."""
+    obj = json.load(open(path))
+    return obj.get("vendor", obj)
+
+
 def fetch_held():
     """Current portfolio symbols via snaptrade_holdings.py (live, read-only). Returns
     a set, or None when holdings can't be determined (auth/exit!=0) so the caller
@@ -127,18 +137,30 @@ def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     scan_all = "--all" in argv
     argv = [a for a in argv if a != "--all"]
+    holdings_file = None
+    if "--holdings" in argv:                       # SSOT wiring: read the day's snapshot
+        i = argv.index("--holdings")               # instead of a fresh live fetch
+        holdings_file = argv[i + 1] if i + 1 < len(argv) else None
+        del argv[i:i + 2]
     if not argv:
-        sys.stderr.write("usage: monitor_invalidations.py <levels_dir> [out_md] [asof] [--all]\n")
+        sys.stderr.write("usage: monitor_invalidations.py <levels_dir> [out_md] [asof] "
+                         "[--all] [--holdings <snapshot.json>]\n")
         return 2
     levels_dir = argv[0]
     out_md = argv[1] if len(argv) > 1 else None
     asof = argv[2] if len(argv) > 2 else ""
     reg, malformed = load_registry(levels_dir)
 
-    # Scope to CURRENT holdings (the point of a monitor) unless --all. If holdings
-    # can't be fetched, fall back to the full registry + a loud note — never blind
-    # the monitor on a SnapTrade outage.
-    held = None if scan_all else fetch_held()
+    # Scope to CURRENT holdings (the point of a monitor) unless --all. Prefer the
+    # daily snapshot file (--holdings) as the single holdings SSOT; else fetch live.
+    # If holdings can't be determined, fall back to the full registry + a loud note
+    # — never blind the monitor on a SnapTrade outage.
+    if scan_all:
+        held = None
+    elif holdings_file:
+        held = held_from_holdings(load_holdings_dump(holdings_file))
+    else:
+        held = fetch_held()
     reg, not_held = filter_to_held(reg, held)
     scope = ("full registry (--all)" if scan_all else
              ("HOLDINGS UNAVAILABLE — scanned full registry" if held is None else
@@ -177,6 +199,12 @@ def main(argv=None):
     if out_md:
         os.makedirs(os.path.dirname(out_md), exist_ok=True)
         open(out_md, "w").write(md)
+        # Fired-trigger sidecar (additive; md bytes unchanged): the portfolio_delta
+        # join reads these monitor-<date>.json files, not the rendered md. Empty
+        # fired day writes [] so a gap day is a witnessed no-trigger, not a hole.
+        sidecar = os.path.splitext(out_md)[0] + ".json"
+        with open(sidecar, "w") as f:
+            json.dump(sorted(fired, key=lambda x: x["ticker"]), f)
     sys.stdout.write(md)
     return 0
 
