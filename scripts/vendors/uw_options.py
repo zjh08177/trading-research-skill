@@ -151,6 +151,10 @@ def build(ticker, spot, atr, earnings, fetch):
             fac = fct(round(f(fr.get("implied_move_perc")), 4), "ratio", "snapshot", asof=fr.get("date"))
             fac["event"] = note
             F["P8.implied_move_front"] = fac
+            if note == "event-status-unknown":
+                fetch.gaps.append("MISSING(earnings_date: implied_move_front "
+                                  "tagged event-status-unknown — no earnings date "
+                                  "supplied, cannot confirm event-inclusive)")
         F["P8.iv_term"] = fct([[r.get("expiry"), round(f(r.get("volatility")), 4)] for r in ts], "list", "snapshot")
 
     cmt = fetch.get(f"/api/stock/{ticker}/interpolated-iv", "iv_cmt_30d")

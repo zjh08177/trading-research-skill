@@ -129,8 +129,10 @@ def test_thin_name_data_thin_no_regime():
 def test_event_tag_unknown_without_earnings():
     data = {"volatility/term-structure": [{"date": "2026-07-02", "expiry": "2026-07-10",
                                            "dte": 8, "implied_move_perc": "0.05"}]}
-    F, _ = build(data, spot=100, earnings=None)
+    F, gaps = build(data, spot=100, earnings=None)
     assert F["P8.implied_move_front"]["event"] == "event-status-unknown"
+    # O5/EC12: unknown event must ALSO name a gap, not just tag the fact.
+    assert any("event-status-unknown" in g for g in gaps)
 
 
 def test_session_state_stale_on_weekend():
