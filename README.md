@@ -5,6 +5,10 @@ Decision-support only — you decide and execute; the tool informs. **Not financ
 
 ## Part 1 — What it does
 
+![Agent graph: one sealed data pack travels unaltered through analysts, a bull/bear tug-of-war, a computed risk gauge, and three independent judges voting, ending in a report glued into a running ledger](assets/architecture-xiaohei.png)
+
+*The whole architecture in one sketch: one sealed data pack (「同一份数据」, never rewritten —「不改一字」) gets argued over by a bull and a bear (「多空拉扯」) under a computed risk gauge, then three independent judges each cast their own vote (「各投各的」), and the verdict lands in a cited report stitched to a running ledger (「报告+台账」).*
+
 Type `/trading-research NVDA` in Claude Code and a staged multi-agent pipeline
 produces a cited, adversarial research report grounded in live market data:
 
