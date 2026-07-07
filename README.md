@@ -55,26 +55,33 @@ git clone https://github.com/zjh08177/trading-research-skill.git \
 
 Create `~/.config/tradingagents/` (`chmod 700`) with:
 
-`vendors.env` — core market data:
+`vendors.env` — only Schwab is required; every optional source you skip shows
+up as a named Data Gap in the report instead of failing the run:
 
 ```
-SCHWAB_CLIENT_ID=...          # Schwab developer app (price/bars/options)
+# REQUIRED — free: register a developer app at developer.schwab.com
+# (needs a Schwab brokerage account; the API itself costs nothing)
+SCHWAB_CLIENT_ID=...
 SCHWAB_CLIENT_SECRET=...
 SCHWAB_TOKEN_PATH=~/.config/tradingagents/schwab_token.json
+
+# REQUIRED but not a key — SEC just wants a contact string (free)
+SEC_EDGAR_USER_AGENT="Name email@example.com"
+
+# OPTIONAL — free tiers
 TIINGO_API_KEY=...            # out-of-band price cross-check
-MARKETAUX_API_KEY=...         # headlines (free tier OK)
-SEC_EDGAR_USER_AGENT="Name email@example.com"   # SEC requires a contact UA
+MARKETAUX_API_KEY=...         # headlines
 ```
 
-`unusualwhales.env` (optional — unlocks `--options` dealer positioning):
+`unusualwhales.env` (optional, paid — unlocks `--options` dealer positioning):
 
 ```
 UNUSUAL_WHALES_API_KEY=...
 ```
 
 `snaptrade.env` (optional — unlocks position-aware reports; omit to run
-position-blind). Link your brokerages once with
-`.venv/bin/python scripts/vendors/snaptrade_setup.py`:
+position-blind). SnapTrade is free for one linked brokerage connection. Link
+yours once with `.venv/bin/python scripts/vendors/snaptrade_setup.py`:
 
 ```
 SNAPTRADE_CLIENT_ID=...
