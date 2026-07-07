@@ -9,11 +9,13 @@ import os
 import subprocess
 import sys
 import statistics
+import uuid
 
 SK = "/Users/bytedance/.claude/skills/trading-research"
 PY = SK + "/.venv/bin/python"
 V = SK + "/scripts/vendors"
 RUNS = SK + "/runs"
+USAGE = SK + "/scripts/usage.py"
 LEDGER = ("/Users/bytedance/Library/Mobile Documents/iCloud~md~obsidian/Documents/"
           "second-brain/Projects/personal/tradingagents/reports/ledger.jsonl")
 ASOF = "2026-07-05"
@@ -40,6 +42,33 @@ def run_ledger(ticker):
     p = subprocess.run([PY, f"{SK}/scripts/ledger.py", "read", "--ticker", ticker,
                         "--before", ASOF], capture_output=True, text=True, env=env)
     return p.stdout.strip() or "No prior track record."
+
+
+def run_usage_start(ticker, kind, run_id, run_dir, batch_id, position_aware):
+    """Best-effort L1 usage start for batch children.
+
+    Telemetry must be visible but must not kill the report run. The helper itself
+    fail-louds with a manual-append banner; this batch spine surfaces stderr/stdout
+    and continues with invocation_id=None so the workflow can still finish.
+    """
+    args = [PY, USAGE, "start", "--mode", "report", "--ticker", ticker,
+            "--job-tier", "J1 POSITION-AWARE", "--asset-class", kind,
+            "--run-id", run_id, "--run-dir", run_dir, "--batch-id", batch_id]
+    if position_aware:
+        args.append("--position-aware")
+    env = {**os.environ, "TRADING_RESEARCH_BATCH_ID": batch_id}
+    p = subprocess.run(args, capture_output=True, text=True, env=env)
+    if p.returncode != 0:
+        sys.stderr.write("WARN: usage.py start failed for "
+                         f"{ticker}: {p.stderr or p.stdout}\n")
+        return None
+    for line in p.stdout.splitlines():
+        if line.startswith("export TRADING_RESEARCH_INVOCATION_ID="):
+            invocation_id = line.split("=", 1)[1].strip()
+            os.environ["TRADING_RESEARCH_INVOCATION_ID"] = invocation_id
+            return invocation_id
+    sys.stderr.write(f"WARN: usage.py start returned no invocation id for {ticker}\n")
+    return None
 
 
 def add_options(ticker, kind, facts, gaps, options):
@@ -227,6 +256,7 @@ def main():
     tickers = json.loads(sys.argv[1])
     options = "--options" in sys.argv[2:]
     holdings = json.load(open(HOLD))
+    batch_id = os.environ.get("TRADING_RESEARCH_BATCH_ID") or str(uuid.uuid4())
     summary = []
     for ticker, kind in tickers:
         run_dir = f"{RUNS}/{ticker}-{ASOF}-{STAMP}"
@@ -243,8 +273,10 @@ def main():
             f"# Scope\n- Query: portfolio holding deep-dive (top-10 combined book).\n"
             f"- Job class: J1 single-name deep dive, POSITION-AWARE.\n"
             f"- Ticker: {ticker} · kind: {kind} · As-of: {ASOF} (Sunday; market closed, last settled 2026-07-02).\n")
+        invocation_id = run_usage_start(ticker, kind, run_id, run_dir, batch_id, True)
         gate = "GATE-FAIL" if any("GATE FAIL" in g for g in gaps) else "ok"
         summary.append({"ticker": ticker, "kind": kind, "run_id": run_id, "run_dir": run_dir,
+                        "batch_id": batch_id, "invocation_id": invocation_id,
                         "gate": gate, "n_facts": len(facts), "held": hf.get("H1.held", {}).get("v"),
                         "gaps": len(gaps), "degraded": len(degraded)})
     print(json.dumps(summary, indent=1))

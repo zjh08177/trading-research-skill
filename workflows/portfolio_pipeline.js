@@ -15,6 +15,22 @@ export const meta = {
 const SK = '/Users/bytedance/.claude/skills/trading-research'
 const items = (typeof args === 'string' ? JSON.parse(args) : args) // [{ticker,kind,run_dir}]
 
+async function usageTerminal(it, ok, reportPath, errText) {
+  if (!it.invocation_id) return
+  const runIdArg = it.run_id ? `--run-id ${it.run_id}` : ''
+  const common = `--invocation-id ${it.invocation_id} --ticker ${it.ticker} ${runIdArg} --run-dir ${it.run_dir}`
+  const cmd = ok
+    ? `${SK}/.venv/bin/python ${SK}/scripts/usage.py end ${common} --report-path ${reportPath} --exit-code 0`
+    : `${SK}/.venv/bin/python ${SK}/scripts/usage.py fail ${common} --exit-code 1`
+  try {
+    await agent(
+      `Run this bash command, then reply with just "ok":\n${cmd}`,
+      { phase: 'Usage', model: 'haiku', effort: 'low', label: `usage:${it.ticker}` })
+  } catch (e) {
+    log(`USAGE TERMINAL FAILED ${it.ticker}: ${String(e).slice(0, 160)}`)
+  }
+}
+
 const HOUSE = (dir) => `You are one agent in a trading-research pipeline. Ground EVERY claim in the DATA PACK at ${dir}/10-datapack.md (fact-id keyed as [P#.fact]). Read it FIRST with the Read tool.
 - Cite every number with its [P#.fact] tag, or a source URL on the same line.
 - DATA GAP rule: if a needed number is NOT in the pack, write "DATA GAP: <what>" and move on. Never estimate, interpolate, or recall a number from memory.
@@ -127,10 +143,12 @@ NEW in schema-v2 — do these:
           required: ['cite_exit', 'hard_fails'],
         }, label: `qa2:${ticker}` })
     }
+    await usageTerminal(it, true, `${dir}/60-report.md`, null)
     return { ticker, kind, run_dir: dir, decision: tally || null, qa: qa || null,
       report_path: `${dir}/60-report.md` }
   } catch (e) {
     log(`ERROR ${ticker}: ${String(e).slice(0, 200)}`)
+    await usageTerminal(it, false, `${dir}/60-report.md`, e)
     return { ticker, kind, run_dir: dir, error: String(e).slice(0, 300) }
   }
 }

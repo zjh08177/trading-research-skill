@@ -62,6 +62,36 @@ Artifact, and copy it to `reports/portfolio/`.
 Resume rule: on crash, stat the artifacts in order and restart at the first
 missing file. There is no resume machinery beyond this rule.
 
+## Usage capture + evolve mode (v2.4a Flywheel)
+
+Every run that reaches Stage 1 writes a metadata-only local usage row. After
+Stage 0 writes `00-scope.md`, run the helper with the skill venv and `eval` its
+export so terminal events reuse the same id:
+
+```bash
+usage_export=$("<SKILL_DIR>/.venv/bin/python" "<SKILL_DIR>/scripts/usage.py" start \
+  --mode report --ticker "$TICKER" --job-tier "$JOB_TIER" \
+  --asset-class "$ASSET_CLASS" --run-id "$RUN_ID" --run-dir "$RUN_DIR")
+eval "$usage_export"
+```
+
+At the terminal boundary, run `<SKILL_DIR>/scripts/usage.py end` with the same
+`TRADING_RESEARCH_INVOCATION_ID`, `--run-id`, `--run-dir`, and each produced
+`--report-path`. On an abort after scope, run `<SKILL_DIR>/scripts/usage.py fail`
+with the nonzero `--exit-code`. `--options-only` is terminal after
+`render_options.py` succeeds; batch/portfolio children are started by
+`scripts/batch/build_datapack.py` and ended by `workflows/portfolio_pipeline.js`.
+The sink is `${XDG_DATA_HOME:-~/.local/share}/trading-research/usage/invocations.jsonl`
+or `TRADING_RESEARCH_USAGE_LEDGER`; it is local `0600`, uncommitted, and must
+not contain holdings/qty/cost amounts. `position_aware` is a boolean only.
+
+`--evolve` is a standalone, non-ticker, read-only mode: record
+`scripts/usage.py start --mode=evolve`, run `<SKILL_DIR>/scripts/evolve.py`
+to emit `10-corpus-index.json`, `20-signals.json`, and `30-retro.md`, then record
+`scripts/usage.py end`. It fetches no vendors, calls no agents, appends no ledger
+row, and edits no skill files. It excludes prior `mode=evolve` rows from its own
+corpus and labels calibration dormant until the resolved sidecar exists.
+
 ## Invariants
 
 Enforce all seventeen. Any violation is a defect, not a judgment call.
