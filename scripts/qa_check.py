@@ -186,8 +186,10 @@ def scan_untagged(text, sections=CHECK_SECTIONS):
 
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
+    strict = "--strict" in argv
+    argv = [a for a in argv if a != "--strict"]
     if len(argv) < 2:
-        sys.stderr.write("usage: qa_check.py <report.md> <datapack.json> [position.json]\n")
+        sys.stderr.write("usage: qa_check.py <report.md> <datapack.json> [position.json] [--strict]\n")
         return 2
     with open(argv[0]) as f:
         report = f.read()
@@ -204,6 +206,8 @@ def main(argv=None):
     results += dresults
     warnings = scan_untagged(report) + dwarnings
     hard = [msg for ok, msg in results if not ok]
+    if strict:
+        hard += warnings
     out = ["== QA CITE CHECK =="]
     out += [("  " if ok else "! ") + msg for ok, msg in results]
     if warnings:

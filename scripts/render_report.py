@@ -16,6 +16,7 @@ import json
 import re
 import sys
 from pathlib import Path
+import levels_schema
 
 CSS = """
 :root{
@@ -493,12 +494,14 @@ def decision_rail(pack, levels):
     gauge = []
     if dn:
         d = dn.get("atr_dist")
-        gauge.append(f'<span class="ex">▼ EXIT {_px(dn["level"])}'
+        label = str(dn.get("action") or "Downside").upper()
+        gauge.append(f'<span class="ex">▼ {html.escape(label)} {_px(dn["level"])}'
                      f'{f" · {abs(d):.1f}×ATR below" if d is not None else ""} '
                      f'<small>→ {html.escape(dn["action"])} ({html.escape(dn["basis"])})</small></span>')
     if up:
         d = up.get("atr_dist")
-        gauge.append(f'<span class="ad">▲ ADD {_px(up["level"])}'
+        label = str(up.get("action") or "Upside").upper()
+        gauge.append(f'<span class="ad">▲ {html.escape(label)} {_px(up["level"])}'
                      f'{f" · {abs(d):.1f}×ATR above" if d is not None else ""} '
                      f'<small>→ {html.escape(up["action"])} ({html.escape(up["basis"])})</small></span>')
     note = ' <span style="color:var(--faint);font-weight:500">(levels derived from SMA structure — see risk box)</span>' if levels.get("derived") else ""
@@ -511,15 +514,23 @@ def build_dashboard(pack, pos, levels):
 
 
 def parse_levels_marker(md, pack, rating=None):
-    """Extract the writer's `LEVELS: downside=..|.. upside=..|.. basis_dn=.. basis_up=..` line.
+    """Extract schema-v2 `LEVELS_JSON`, or safely upgrade a legacy `LEVELS:` line.
+
     Writer-emitted sides win; any side the writer omits or marks `None` is filled from
-    derive_levels so the registry is ALWAYS two-sided with a named action (spec E)."""
+    derive_levels so the registry is ALWAYS two-sided with a named action (spec E).
+    """
+    jm = re.search(r"^LEVELS_JSON:\s*```(?:json)?\s*(.*?)\s*```", md, re.M | re.S)
+    if jm:
+        try:
+            return levels_schema.normalize_level_set(json.loads(jm.group(1)), rating)
+        except (ValueError, TypeError):
+            pass
     m = re.search(r"^LEVELS:\s*(.+)$", md, re.M)
     spot = _v(pack, "P1.price") or _v(pack, "P1.last")
     atr = _v(pack, "P2.atr14")
     fallback = derive_levels(pack, rating) or {}
     if not m:
-        return fallback or None
+        return levels_schema.normalize_level_set(fallback, rating) if fallback else None
     body = m.group(1)
 
     def side(key):
@@ -536,10 +547,11 @@ def parse_levels_marker(md, pack, rating=None):
         return {"level": lvl, "action": act,
                 "basis": (bm.group(1).replace("_", " ") if bm else key), "atr_dist": dist}
     dn, up = side("downside"), side("upside")
-    return {"spot": round(spot, 2) if spot else fallback.get("spot"),
-            "downside": dn or fallback.get("downside"),
-            "upside": up or fallback.get("upside"),
-            "derived": dn is None and up is None}
+    legacy = {"spot": round(spot, 2) if spot else fallback.get("spot"),
+              "downside": dn or fallback.get("downside"),
+              "upside": up or fallback.get("upside"),
+              "derived": dn is None and up is None}
+    return levels_schema.normalize_level_set(legacy, rating)
 
 
 def _rating_from_md(md):

@@ -38,6 +38,40 @@ The risk officer's narration (1R stop from the invalidation anchor, concentratio
 and event risk: next earnings {{earnings_date}} [P5.next_earnings]) goes BELOW the
 block. The computed block is context-only and never changes the rating.
 
+At the end of this section, emit the schema-v2 machine-readable levels block.
+It preserves comparison rules, rating gates, and confirmation conditions; Hold
+directional triggers must be review-only.
+
+LEVELS_JSON:
+```json
+{
+  "schema": 2,
+  "spot": {{price}},
+  "triggers": [
+    {
+      "side": "downside",
+      "level": {{downside_level}},
+      "intended_action": "{{Sell|Exit|Trim|Stop trimming / re-rate}}",
+      "basis": "{{cited basis and qualifier}}",
+      "comparison": "{{intraday_below|close_below}}",
+      "action_strength": "{{review|act}}",
+      "rating_gate": "{{none|hold_requires_review}}",
+      "conditions": []
+    },
+    {
+      "side": "upside",
+      "level": {{upside_level}},
+      "intended_action": "{{Buy|Add|Stop trimming / re-rate}}",
+      "basis": "{{cited basis and qualifier}}",
+      "comparison": "{{intraday_above|close_above}}",
+      "action_strength": "{{review|act}}",
+      "rating_gate": "{{none|hold_requires_review}}",
+      "conditions": []
+    }
+  ]
+}
+```
+
 ## Valuation
 
 | Metric | Value | Peer / history | Tag |

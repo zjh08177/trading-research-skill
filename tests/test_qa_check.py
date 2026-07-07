@@ -40,3 +40,11 @@ def test_real_sign_flip_still_fails():
     # report claims a POSITIVE macd where pack is negative -> must fail
     res = _run("MACD 9.88 [P2.macd].", _pack())
     assert res[0][0] is False
+
+
+def test_strict_mode_fails_untagged_numbers(tmp_path):
+    report = tmp_path / "report.md"
+    pack = tmp_path / "pack.json"
+    report.write_text("# T\n\n## Thesis\n\nRevenue grew 12.3% without a tag.\n")
+    pack.write_text("{}")
+    assert qa.main([str(report), str(pack), "--strict"]) == 1

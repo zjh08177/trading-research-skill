@@ -25,7 +25,11 @@ import monitor_invalidations as mon  # noqa: E402
 KNIFE_EDGE_PCT = 0.5  # within this % of an un-fired level → "AT TRIGGER"
 
 
-def latest_ratings(ledger_path):
+def _row_date(row):
+    return str(row.get("as_of") or row.get("date_utc") or "")[:10]
+
+
+def latest_ratings(ledger_path, before=None):
     """{ticker: {rating, as_of, votes}} from the newest row per ticker; count bad lines."""
     latest, bad = {}, 0
     for line in open(ledger_path):
@@ -37,6 +41,8 @@ def latest_ratings(ledger_path):
             t = r["ticker"]
         except Exception:
             bad += 1
+            continue
+        if before and _row_date(r) and _row_date(r) > before:
             continue
         if t not in latest or r.get("as_of", "") >= latest[t].get("as_of", ""):
             latest[t] = r
@@ -78,9 +84,11 @@ def build_rows(reg, ratings, holdings_map, prices, classmap):
     for e in reg:
         t = e["ticker"]
         p = prices.get(t)
-        fired = [f for f in mon.evaluate(e, p) if f["fired"]] if p is not None else []
         h = holdings_map.get(t, {})
         r = ratings.get(t, {})
+        events = mon.evaluate(e, p, rating=r.get("rating")) if p is not None else []
+        fired = [f for f in events if f.get("fired")]
+        near = [f for f in events if f.get("state") == "near"]
         atr = derived_atr(e)
         spot = e.get("spot")
         row = {
@@ -93,17 +101,19 @@ def build_rows(reg, ratings, holdings_map, prices, classmap):
             "chg_pct": (p - spot) / spot * 100 if (p is not None and spot) else None,
             "dn": _side(e, "downside", p, atr), "up": _side(e, "upside", p, atr),
             "fired": fired,
+            "events": events,
+            "near": near,
         }
         edges = [s for s in (row["dn"], row["up"])
                  if s and s.get("dist_pct") is not None and 0 < s["dist_pct"] <= KNIFE_EDGE_PCT]
-        row["knife_edge"] = bool(edges) and not fired
+        row["knife_edge"] = (bool(edges) or bool(near)) and not fired
         if p is None:
             row["plan"] = "PRICE UNAVAILABLE — re-check"
         elif fired:
-            row["plan"] = " · ".join(f"ACT — {f['action']} ({f['dir']} {f['level']:g} crossed)"
+            row["plan"] = " · ".join(f.get("plan") or f"{f['action']} ({f['dir']} {f['level']:g})"
                                      for f in fired)
         elif row["knife_edge"]:
-            row["plan"] = "AT TRIGGER — treat as live"
+            row["plan"] = " · ".join(f.get("plan") for f in near) if near else "WAIT — near level; confirmation required"
         else:
             row["plan"] = f"Follow {row['rating']}; alerts armed"
         rows.append(row)
@@ -228,7 +238,7 @@ def main(argv=None):
     price_time = argv[7] if len(argv) > 7 else "snapshot"
 
     reg, malformed = mon.load_registry(levels_dir)
-    ratings, bad = latest_ratings(ledger_p)
+    ratings, bad = latest_ratings(ledger_p, before=asof)
     hold = mon.load_holdings_dump(hold_p)   # accepts the day's snapshot envelope or a raw dump
     holdings_map = {h["symbol"]: h for h in hold.get("holdings", [])}
     reg, not_held = filter_registry_to_holdings(reg, holdings_map)

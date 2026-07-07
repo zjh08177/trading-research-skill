@@ -64,7 +64,7 @@ missing file. There is no resume machinery beyond this rule.
 
 ## Invariants
 
-Enforce all sixteen. Any violation is a defect, not a judgment call.
+Enforce all seventeen. Any violation is a defect, not a judgment call.
 
 | # | Rule | Enforced by |
 |---|---|---|
@@ -84,6 +84,7 @@ Enforce all sixteen. Any violation is a defect, not a judgment call.
 | 14 | Position is live-only: a past/future `--asof` yields no position (exit 3), never a fabricated historical holding. | `snaptrade_account.py` / `schwab_account.py` `--asof` guard (parsed dates vs today) |
 | 15 | The position never changes the headline call — only the action framing around it. A "Your Position" section that argues the rating is a defect. | writer role card; QA prose pass |
 | 16 | The risk box's adverse-move, invalidation, and context numbers come only from `risk_box.py`, inserted verbatim as `40-riskbox-block.md`; the risk officer narrates around it and never recomputes them. The block is context-only — never an action/size, never changes the rating. | `risk_box.py` emits the block; officer card forbids recompute; `qa_check.py` exempts the verbatim region |
+| 17 | Decision levels preserve execution qualifiers. Reports emit schema-v2 `LEVELS_JSON` with comparison, action strength, rating gate, and confirmation conditions. A crossed level is never automatically an execution instruction: Hold-rated directional triggers are review-only, legacy `LEVELS:` is upgraded to safe review-first semantics, and action-plan rows use `ACT` only for `confirmed_act`. | `levels_schema.py`; `render_report.py`; `monitor_invalidations.py`; `action_plan.py`; `portfolio_delta.py`; `qa_check.py --strict` |
 
 ## Byte-identical inputs and no paraphrase
 
@@ -167,10 +168,15 @@ ONCE and reuses it, so same-day artifacts can never disagree:
    a partial book writes + DEGRADEs and never same-day-downgrades.
 2. Point the monitor and action-plan at that file instead of a fresh fetch:
    `monitor_invalidations.py <levels> <out_md> <asof> --holdings <snapshot>` and
-   `action_plan.py ... <snapshot> ...` (both unwrap the envelope).
+   `action_plan.py ... <snapshot> ...` (both unwrap the envelope). Monitor rows carry
+   a trigger `state`; the action plan may render `ACT` only when that state is
+   `confirmed_act`. Crossed-but-unconfirmed or Hold-gated levels render `REVIEW`, and
+   near levels render `WAIT`.
 3. `scripts/batch/portfolio_delta.py <holdings-history> <ledger.jsonl> <reports>/portfolio
    <out_md>` diffs the two latest snapshots into adds/trims/exits and grades each against
-   the ledger rating + fired monitor triggers (`monitor-<date>.json` sidecars).
+   the ledger rating + fired monitor triggers (`monitor-<date>.json` sidecars). A
+   Hold-rated add/trim/exit without a `confirmed_act` sidecar is a discipline issue,
+   not a neutral "no-call".
 
 **Position data never leaves disk (R4).** Snapshots, deltas, and activities are the live
 book: they are git-ignored in the vault (`holdings-history/`, `activities/`) and are NEVER
@@ -227,7 +233,7 @@ Fetch pacing: `uw_options` paces its own ~17 UW calls at ≥0.75 s (≈80/min, u
 the ~120/min ceiling); the batch driver runs tickers serially, so no cross-ticker
 burst.
 
-Options invariants (enforce alongside 1–16):
+Options invariants (enforce alongside 1–17):
 
 | # | Rule |
 |---|---|
@@ -263,7 +269,7 @@ disclose it. Insert the emitted `55-rating-block.md` into the report verbatim.
 | `snaptrade_account.py` exit 2 (unconfigured/auth) | fall back to `schwab_account.py`; if that also exits 2, "Your Position" omitted + noted in Data Gaps; run continues position-blind |
 | Position CLI exit 3 (back-dated `--asof`) | no position section (expected for back-dated runs); run continues |
 | Ticker not held (`H1.held=false`) | no position section; cold-start report unchanged |
-| qa_check hard fail ×2 | ship with QA-exceptions box quoting failures verbatim |
+| qa_check hard fail ×2 | ship with QA-exceptions box quoting failures verbatim; run `--strict` for release/blocking checks so warning-class numeric issues are hard failures |
 | ledger append fails | print row in chat; never skip silently |
 | Wall clock > 15 min | finish + disclose overrun (never abort for time) |
 
@@ -360,6 +366,6 @@ Retry ladder (precedence pinned; each judge's exit code + stderr also append to
 | Token-cost footer field | `cost: cursor-subscription (N/A)`. |
 | Vendor CLIs, `TRADING_RESEARCH_LEDGER` env | unchanged — the CLIs are cwd-independent (vendored closure + `~/.config/tradingagents` creds); the orchestrating shell exports the env var. |
 
-**Invariant 17 (Cursor host; additive to 1–16):** Cursor judges run plan-mode,
+**Invariant 18 (Cursor host; additive to 1–17):** Cursor judges run plan-mode,
 read-only, bundle-only — a vote citing facts absent from the judge bundle is
 malformed.

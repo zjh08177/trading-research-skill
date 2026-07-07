@@ -22,6 +22,8 @@ SK = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VENDORS = SK + "/scripts/vendors"
 PY = sys.executable
 CRYPTO_REST = "https://api.crypto.com/exchange/v1/public/get-tickers"
+sys.path.insert(0, os.path.join(SK, "scripts"))
+import levels_schema as levels  # noqa: E402
 
 
 def load_registry(levels_dir):
@@ -128,21 +130,22 @@ def equity_price(ticker):
         return None
 
 
-def evaluate(entry, price):
-    """Pure: return the list of FIRED triggers for one holding at `price`.
-    downside fires when price <= level; upside fires when price >= level."""
+def evaluate(entry, price, rating=None, market=None):
+    """Pure: return non-inactive trigger events for one holding at `price`.
+
+    A crossed level is not automatically executable. The returned rows carry a
+    `state` (`near`, `crossed_unconfirmed`, `confirmed_review`,
+    `confirmed_act`, `data_gap`) plus a pre-rendered safe `plan`.
+    """
     if price is None:
         return [{"ticker": entry["ticker"], "dir": "?", "fired": False, "price": None,
-                 "level": None, "action": "PRICE UNAVAILABLE", "basis": ""}]
-    fired = []
-    dn, up = entry.get("downside"), entry.get("upside")
-    if dn and dn.get("level") is not None and price <= dn["level"]:
-        fired.append({"ticker": entry["ticker"], "dir": "▼", "fired": True, "price": price,
-                      "level": dn["level"], "action": dn.get("action", ""), "basis": dn.get("basis", "")})
-    if up and up.get("level") is not None and price >= up["level"]:
-        fired.append({"ticker": entry["ticker"], "dir": "▲", "fired": True, "price": price,
-                      "level": up["level"], "action": up.get("action", ""), "basis": up.get("basis", "")})
-    return fired
+                 "level": None, "action": "PRICE UNAVAILABLE", "basis": "",
+                 "state": "data_gap", "missing_data": ["price"],
+                 "plan": "WAIT_DATA — price unavailable; re-check"}]
+    events = levels.evaluate_level_set(entry, price=price, rating=rating, market=market)
+    for event in events:
+        event["ticker"] = entry.get("ticker")
+    return events
 
 
 def main(argv=None):

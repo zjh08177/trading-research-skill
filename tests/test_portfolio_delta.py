@@ -148,7 +148,28 @@ def test_no_call_when_neither_axis_has_direction():
     rep = report([H("AAA", 10)], [H("AAA", 15)],
                  ledger=[rate("AAA", "Hold", as_of="2026-07-01")])
     c = by_sym(rep)["AAA"]
-    assert c["verdict"] == "no-call" and c["axis"] is None
+    assert c["verdict"] == "against Hold discipline" and c["axis"] == "discipline"
+
+
+def test_review_only_trigger_change_on_hold_is_discipline_breach():
+    rep = report([H("AAA", 10)], [H("AAA", 15)],
+                 ledger=[rate("AAA", "Hold", as_of="2026-07-01")],
+                 sidecars=[{**trig("AAA", "Add"), "state": "crossed_unconfirmed"}])
+    c = by_sym(rep)["AAA"]
+    assert c["verdict"] == "review-only action changed size"
+    assert c["axis"] == "discipline"
+
+
+def test_amd_msft_replay_changes_are_hold_discipline_breaches():
+    rep = report([H("AMD", 60, 517.82), H("MSFT", 50, 390.49)],
+                 [H("AMD", 70, 521.15), H("MSFT", 35, 392.06)],
+                 ledger=[rate("AMD", "Hold", as_of="2026-07-05"),
+                         rate("MSFT", "Hold", as_of="2026-07-05")],
+                 sidecars=[{**trig("AMD", "Add"), "state": "crossed_unconfirmed"},
+                           {**trig("MSFT", "Trim"), "state": "near"}])
+    m = by_sym(rep)
+    assert m["AMD"]["verdict"] == "review-only action changed size"
+    assert m["MSFT"]["verdict"] == "against Hold discipline"
 
 
 def test_no_call_row_carries_no_direction():

@@ -55,7 +55,7 @@ def exec_summary(md):
     """First substantive prose paragraph (the thesis) for the scorecard blurb."""
     for para in re.split(r"\n\s*\n", md):
         s = para.strip()
-        if len(s) > 110 and s[0] not in "#>|_-" and not s.startswith("LEVELS:") \
+        if len(s) > 110 and s[0] not in "#>|_-" and not s.startswith(("LEVELS:", "LEVELS_JSON:")) \
                 and "riskbox-block" not in s and "rating-block" not in s:
             s = re.sub(r"\[[PH]\d+\.[^\]]*\]", "", s)             # strip cite tags (incl. multi-tag)
             s = re.sub(r"\*\*|__|\*|`", "", s)                    # strip md emphasis

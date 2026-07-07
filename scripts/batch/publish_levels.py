@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Publish the current batch's decision-levels to the vault registry (v2.3 F support).
+"""Publish the current batch's schema-v2 decision levels to the vault registry.
 
 For every <TICKER>-<asof>-<stamp>/56-levels.json in the skill runs, write
 <vault_reports>/levels/<TICKER>.json with ticker+kind+asof added. That directory is the
 "live" trigger set monitor_invalidations.py reads; re-running a holding refreshes it.
+Schema-v2 trigger qualifiers are preserved verbatim.
 
 Usage: publish_levels.py <vault_reports_dir> <asof> [stamp]
 """

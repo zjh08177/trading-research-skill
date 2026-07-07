@@ -82,7 +82,7 @@ def holdings_by_symbol(vendor):
 
 # ---- trigger direction (free-text monitor action → sign) ----
 
-def trigger_dir(action):
+def _action_dir(action):
     """Add→+1; Trim/Sell/Exit→−1; Stop trimming / re-rate→0 (informational);
     unknown free-text → None (no directional trigger)."""
     a = (action or "").strip().lower()
@@ -94,6 +94,23 @@ def trigger_dir(action):
         return 1
     if a.startswith(("trim", "sell", "exit")):
         return -1
+    return None
+
+
+def trigger_dir(action, state=None):
+    """Directional trigger only when confirmed executable.
+
+    Legacy sidecars have no state and keep the old interpretation. New stateful
+    sidecars count as a trigger axis only at `confirmed_act`.
+    """
+    if state and state != "confirmed_act":
+        return None
+    return _action_dir(action)
+
+
+def review_trigger_dir(action, state=None):
+    if state in ("crossed_unconfirmed", "confirmed_review"):
+        return _action_dir(action)
     return None
 
 
@@ -159,6 +176,12 @@ def verdict(action_dir, triggers, rating_dir):
     elif rating_dir in (1, -1):
         base, axis, cited = rating_dir, "rating", []
     else:
+        review_dirs = {t.get("review_tdir") for t in triggers if t.get("review_tdir") in (1, -1)}
+        if rating_dir == 0 and review_dirs:
+            return "review-only action changed size", "discipline", [
+                t for t in triggers if t.get("review_tdir") in (1, -1)]
+        if rating_dir == 0 and action_dir in (1, -1):
+            return "against Hold discipline", "discipline", []
         return "no-call", None, []
     return ("followed" if action_dir == base else "against"), axis, cited
 
@@ -214,8 +237,9 @@ def build_report(older, newer, old_env, new_env, ledger_rows, sidecars):
         c = _classify(sym, old.get(sym), new.get(sym))
         if c is None:
             continue
-        trigs = [dict(t, tdir=trigger_dir(t.get("action"))) for t in sidecars
-                 if str(t.get("ticker", "")).upper() == sym.upper()]
+        trigs = [dict(t, tdir=trigger_dir(t.get("action"), t.get("state")),
+                      review_tdir=review_trigger_dir(t.get("action"), t.get("state")))
+                 for t in sidecars if str(t.get("ticker", "")).upper() == sym.upper()]
         if c["change"] == "basis-restated":
             c.update(verdict=None, axis=None, triggers=trigs)
         elif c["action_dir"] == -1 and partial:
@@ -265,6 +289,8 @@ def _verdict_cell(c):
         return f"unverifiable — {c.get('note', 'partial snapshot')}"
     if v == "mixed":
         return "mixed — conflicting triggers"
+    if c.get("axis") == "discipline":
+        return v
     if c.get("axis") == "rating" and c.get("rating_in_window"):
         return f"{v} (rating, call updated in window)"
     return f"{v} ({c['axis']})" if c.get("axis") else v
@@ -292,6 +318,7 @@ def render_md(report):
     older, newer, changes = report["older_date"], report["newer_date"], report["changes"]
     graded = [c for c in changes if c.get("verdict") in ("followed", "against", "mixed")]
     followed = sum(1 for c in graded if c["verdict"] == "followed")
+    discipline = [c for c in changes if c.get("axis") == "discipline"]
 
     head = f"**{len(changes)}** changed position(s)"
     if (report.get("gap_days") or 0) > 1:
@@ -302,6 +329,8 @@ def render_md(report):
                  "trim/exit verdicts suppressed")
     if graded:
         head += f" · adherence {followed}/{len(graded)} followed"
+    if discipline:
+        head += f" · discipline issues {len(discipline)}"
 
     L = [f"# Portfolio delta — {newer} (vs {older})", "", head + ".", ""]
     if not changes:

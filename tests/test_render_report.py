@@ -49,8 +49,41 @@ def test_sell_upside_is_short_invalidation():
 def test_parse_levels_marker_overrides():
     md = "risk stuff\nLEVELS: downside=88.5|Sell upside=112.0|Add basis_dn=SMA200 basis_up=SMA50\n"
     lv = rr.parse_levels_marker(md, _pack(), rating="Hold")
+    assert lv["schema"] == 2 and lv["legacy"] is True
     assert lv["downside"]["level"] == 88.5 and lv["downside"]["action"] == "Sell"
     assert lv["upside"]["level"] == 112.0 and lv["upside"]["basis"] == "SMA50"
+    assert lv["triggers"][1]["action_strength"] == "review"
+    assert lv["triggers"][1]["rating_gate"] == "hold_requires_review"
+
+
+def test_parse_levels_json_preserves_trigger_qualifiers():
+    md = """risk stuff
+LEVELS_JSON:
+```json
+{
+  "schema": 2,
+  "spot": 100.0,
+  "triggers": [
+    {
+      "side": "upside",
+      "level": 112.0,
+      "intended_action": "Add",
+      "basis": "SMA50 + confirmation",
+      "comparison": "close_above",
+      "action_strength": "review",
+      "rating_gate": "hold_requires_review",
+      "conditions": [{"metric": "volume_confirmed"}]
+    }
+  ]
+}
+```
+"""
+    lv = rr.parse_levels_marker(md, _pack(), rating="Hold")
+    assert lv["schema"] == 2 and lv["legacy"] is False
+    assert lv["triggers"][0]["comparison"] == "close_above"
+    assert lv["triggers"][0]["action_strength"] == "review"
+    assert lv["triggers"][0]["rating_gate"] == "hold_requires_review"
+    assert lv["triggers"][0]["conditions"] == [{"metric": "volume_confirmed"}]
 
 
 def test_key_panel_none_margin_no_crash():
@@ -77,6 +110,18 @@ def test_rail_and_panel_render():
     lv = rr.derive_levels(_pack(), rating="Hold")
     rail = rr.decision_rail(_pack(), lv)
     assert "<svg" in rail and rail.count("<svg") == rail.count("</svg>")
-    assert "EXIT" in rail and "ADD" in rail and "<rect" in rail
+    assert "ADD / BUY" in rail and "<rect" in rail
     panel = rr.key_panel(_pack(), {})
     assert "kpanel" in panel and "Price" in panel
+
+
+def test_rail_uses_actual_action_label_not_hardcoded_exit():
+    lv = {"spot": 100.0,
+          "downside": {"level": 95.0, "action": "Trim", "basis": "SMA20", "atr_dist": 1.0},
+          "upside": {"level": 110.0, "action": "Stop trimming / re-rate", "basis": "SMA50", "atr_dist": 2.0},
+          "derived": False}
+    rail = rr.decision_rail(_pack(), lv)
+    assert "▼ TRIM" in rail
+    assert "▲ STOP TRIMMING / RE-RATE" in rail
+    assert "▼ EXIT" not in rail
+    assert "▲ ADD" not in rail

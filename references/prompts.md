@@ -144,14 +144,49 @@ Auto-rendered dashboard: a KEY-INDICATORS panel + a DECISION RAIL are inserted
 deterministically at the report top by render_report.py — do NOT hand-tabulate the
 raw indicator dump; interpret, don't restate.
 TWO-SIDED DECISION LEVELS (resolves the Hold-invalidation ambiguity): a level is
-never a bare price — it names the RESULTING ACTION and DIRECTION. Every report states
-BOTH boundaries: a DOWNSIDE below which the thesis breaks (→ Sell/Exit/Trim) and an
-UPSIDE above which it upgrades (→ Buy/Add). A Hold carries two real, distinct levels;
-a Sell's upside = short-invalidation (→ stop trimming / re-rate); a Buy's downside =
-thesis-break (→ exit). Pick each from pack SMA20/50/200, day range, or 52wk — cite it.
+never a bare price — it names the RESULTING ACTION, DIRECTION, comparison rule, and
+execution qualifier. Every report states BOTH boundaries: a DOWNSIDE below which the
+thesis breaks (→ Sell/Exit/Trim) and an UPSIDE above which it upgrades (→ Buy/Add).
+A Hold carries two real, distinct levels, but directional changes under Hold are
+review-only until explicit confirmation is satisfied; a Sell's upside = short-
+invalidation (→ stop trimming / re-rate); a Buy's downside = thesis-break (→ exit).
+Pick each from pack SMA20/50/200, day range, or 52wk — cite it.
 At the very end of the "## Risk box" section (below the verbatim block + narration),
-emit ONE machine-readable line (parsed into 56-levels.json; powers the rail + monitor):
-  LEVELS: downside=<price>|<Sell|Exit|Trim> upside=<price>|<Buy|Add|None> basis_dn=<SMA200|day-low|...> basis_up=<SMA50|...>
+emit ONE machine-readable fenced block (parsed into 56-levels.json; powers the rail,
+monitor, and action plan). `action_strength` is `review` unless the rating and all
+confirmation conditions justify direct execution; for Hold, directional add/trim/exit
+triggers are always `review`.
+  LEVELS_JSON:
+  ```json
+  {
+    "schema": 2,
+    "spot": <current price>,
+    "triggers": [
+      {
+        "side": "downside",
+        "level": <price>,
+        "intended_action": "<Sell|Exit|Trim|Stop trimming / re-rate>",
+        "basis": "<SMA200|SMA50|SMA20|day-low|... plus any cited qualifier>",
+        "comparison": "<intraday_below|close_below>",
+        "action_strength": "<review|act>",
+        "rating_gate": "<none|hold_requires_review>",
+        "conditions": [{"metric": "<confirmation metric>", "rule": "<plain-English rule>"}]
+      },
+      {
+        "side": "upside",
+        "level": <price>,
+        "intended_action": "<Buy|Add|Stop trimming / re-rate>",
+        "basis": "<SMA50|SMA20|day-high|... plus any cited qualifier>",
+        "comparison": "<intraday_above|close_above>",
+        "action_strength": "<review|act>",
+        "rating_gate": "<none|hold_requires_review>",
+        "conditions": [{"metric": "<confirmation metric>", "rule": "<plain-English rule>"}]
+      }
+    ]
+  }
+  ```
+Legacy `LEVELS:` is parser-compatible only for old reports; do not emit it in new
+reports.
 Position framing: read 15-position.json {{position_json}}. Only if H1.held=true, add a
 concrete, ACTIONABLE "## Your position" section — the rating block is position-blind and
 FINAL (invariant 15); the position never argues it. State weight [H1.pct_of_book], shares

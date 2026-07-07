@@ -32,7 +32,8 @@ def test_derived_atr_from_registry_triple():
 def test_upside_fire_verbatim_action_and_sort_first():
     out = ap.build_rows(REG, RATINGS, HOLD, {"AAA": 111.0, "BBB": 48.0}, CLS)
     assert out[0]["ticker"] == "AAA" and out[0]["fired"][0]["action"] == "Add"
-    assert "ACT — Add" in out[0]["plan"]
+    assert "REVIEW" in out[0]["plan"]
+    assert "ACT — Add" not in out[0]["plan"]
 
 
 def test_signed_distances_both_sides():
@@ -45,7 +46,8 @@ def test_signed_distances_both_sides():
 
 def test_knife_edge_flags_near_level():
     r = rows({"AAA": 109.8, "BBB": 48.0})["AAA"]  # 0.18% below Add trigger
-    assert r["knife_edge"] and "AT TRIGGER" in r["plan"]
+    assert r["knife_edge"] and "WAIT" in r["plan"]
+    assert "AT TRIGGER" not in r["plan"]
 
 
 def test_missing_price_plan():
@@ -65,8 +67,45 @@ def test_render_contains_queue_and_provenance(tmp_path):
                       {"reg_asof": "2026-07-05", "book": 1000.0, "n_accounts": 2,
                        "price_time": "t", "bad_ledger": 0, "unmonitored": "CCC",
                        "not_held": "DDD", "malformed": ""})
-    assert "## Action queue" in md and "**ACT — Add" in md
+    assert "## Action queue" in md and "**REVIEW" in md
+    assert "**ACT — Add" not in md
     assert "no new ratings" in md and "CCC" in md and "DDD" in md
+
+
+def test_amd_hold_replay_crossed_add_is_review_not_act():
+    reg = [{"ticker": "AMD", "kind": "equity", "asof": "2026-07-05", "spot": 517.82,
+            "downside": {"level": 460.38, "action": "Exit", "basis": "SMA50", "atr_dist": 1.6},
+            "upside": {"level": 547.65, "action": "Add", "basis": "day-high", "atr_dist": 0.83}}]
+    ratings = {"AMD": {"rating": "Hold", "as_of": "2026-07-05", "votes": "5×Hold"}}
+    hold = {"AMD": {"symbol": "AMD", "pct_of_book": 7.9, "qty": 60}}
+    row = ap.build_rows(reg, ratings, hold, {"AMD": 551.444}, {"AMD": {"sector": "Semis"}})[0]
+    assert row["fired"][0]["state"] == "crossed_unconfirmed"
+    assert row["plan"].startswith("REVIEW")
+    assert "ACT" not in row["plan"]
+
+
+def test_msft_hold_replay_near_trim_is_wait_not_live():
+    reg = [{"ticker": "MSFT", "kind": "equity", "asof": "2026-07-05", "spot": 390.49,
+            "downside": {"level": 386.96, "action": "Trim", "basis": "SMA20", "atr_dist": 0.27},
+            "upside": {"level": 407.6, "action": "Add", "basis": "SMA50", "atr_dist": 1.31}}]
+    ratings = {"MSFT": {"rating": "Hold", "as_of": "2026-07-05", "votes": "5×Hold"}}
+    hold = {"MSFT": {"symbol": "MSFT", "pct_of_book": 5.0, "qty": 50}}
+    row = ap.build_rows(reg, ratings, hold, {"MSFT": 387.168}, {"MSFT": {"sector": "Megacap"}})[0]
+    assert row["knife_edge"]
+    assert row["plan"].startswith("WAIT")
+    assert "AT TRIGGER" not in row["plan"]
+
+
+def test_confirmed_act_trigger_still_emits_act():
+    reg = [{"ticker": "BBB", "kind": "equity", "asof": "2026-07-05", "schema": 2, "spot": 100.0,
+            "triggers": [{"side": "downside", "level": 90.0, "intended_action": "Exit",
+                          "basis": "risk stop", "comparison": "intraday_below",
+                          "action_strength": "act", "conditions": []}]}]
+    ratings = {"BBB": {"rating": "Sell", "as_of": "2026-07-05", "votes": "5×Sell"}}
+    hold = {"BBB": {"symbol": "BBB", "pct_of_book": 2.0, "qty": 5}}
+    row = ap.build_rows(reg, ratings, hold, {"BBB": 85.0}, {"BBB": {"sector": "Fintech"}})[0]
+    assert row["fired"][0]["state"] == "confirmed_act"
+    assert row["plan"].startswith("ACT — Exit")
 
 
 def test_main_consumes_snapshot_envelope(tmp_path):
@@ -102,3 +141,15 @@ def test_latest_ratings_skips_malformed(tmp_path):
     ratings, bad = ap.latest_ratings(str(p))
     assert bad == 1 and ratings["AAA"]["rating"] == "Hold"
     assert ratings["AAA"]["votes"] == "5×Hold"
+
+
+def test_latest_ratings_ignores_future_rows(tmp_path):
+    p = tmp_path / "ledger.jsonl"
+    p.write_text('{"ticker":"AAA","as_of":"2026-07-01","mode_rating":"Sell",'
+                 '"distribution":{"Sell":3}}\n'
+                 '{"ticker":"AAA","as_of":"2026-07-07","mode_rating":"Buy",'
+                 '"distribution":{"Buy":5}}\n')
+    ratings, bad = ap.latest_ratings(str(p), before="2026-07-06")
+    assert bad == 0 and ratings["AAA"]["rating"] == "Sell"
+    ratings, _ = ap.latest_ratings(str(p))
+    assert ratings["AAA"]["rating"] == "Buy"
