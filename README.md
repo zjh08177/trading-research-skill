@@ -1,19 +1,49 @@
 # trading-research — a Claude Code skill
 
-Grounded, adversarial single-name research for stocks: deterministic data pack →
-parallel analysts → bull/bear debate → computed risk box → N≥3 independent judge
-ensemble → cited report with a track-record ledger. Decision-support only — you
-decide and execute; the tool informs. **Not financial advice.**
+Ask for a stock, get an institutional-grade research report you can argue with.
+Decision-support only — you decide and execute; the tool informs. **Not financial advice.**
 
-## Requirements
+## Part 1 — What it does
 
-- [Claude Code](https://claude.com/claude-code) with a plan that allows subagents
-  (the pipeline spawns Sonnet analysts and Opus judges via the Agent tool).
+Type `/trading-research NVDA` in Claude Code and a staged multi-agent pipeline
+produces a cited, adversarial research report grounded in live market data:
+
+- **Live data pack, fail-loud.** Price and technicals (Schwab), SEC fundamentals
+  (EDGAR), dated headlines and next earnings, an independent Tiingo price
+  cross-check. Every number in the report traces to a tagged pack fact; a dead
+  source becomes a named `MISSING`/`DEGRADED` box, never a silent guess.
+- **Adversarial, not agreeable.** Three analysts (fundamental / technical /
+  sentiment) brief independently, then a bull and a bear debate in two waves —
+  the strongest case for each side, attacked directly.
+- **A jury, not a vibe.** Three to five independent judges vote blind on
+  byte-identical inputs. The headline rating is the ensemble tally with the full
+  vote distribution and dissent published. Wide disagreement escalates the panel;
+  irreconcilable spread publishes as an honest NO-CALL.
+- **Risk in ATR units.** A computed risk box states the adverse move, volatility
+  context, and invalidation anchor. Every report carries **two-sided decision
+  levels** — a downside that breaks the thesis and an upside that upgrades it.
+- **Options X-ray (`--options`).** Dealer positioning from Unusual Whales: net
+  GEX and gamma regime, gamma flip, IV rank and term structure, max pain, OI
+  walls, unusual flow — rendered deterministically, never allowed to change the
+  equity rating.
+- **Position-aware, position-blind.** With SnapTrade linked (read-only, any
+  broker), the report adds a "Your position" section — size, P/L, a two-sided
+  dollar plan, tax flag. The rating itself never sees your position.
+- **A track record you can audit.** Every run appends to a ledger; each new run
+  reads its own history with a look-ahead guard. Ratings age publicly, in front
+  of you.
+
+## Part 2 — Setup & use
+
+### Requirements
+
+- [Claude Code](https://claude.com/claude-code) with a plan that allows
+  subagents (analysts run on Sonnet, judges on Opus).
 - Python 3.13 (`brew install python@3.13`).
-- Your own market-data API keys (below). The skill is fully self-contained —
-  no other checkout or install is needed.
+- Your own market-data API keys (below). The skill is self-contained — no other
+  checkout or install needed.
 
-## Install
+### Install
 
 ```sh
 git clone https://github.com/zjh08177/trading-research-skill.git \
@@ -21,9 +51,9 @@ git clone https://github.com/zjh08177/trading-research-skill.git \
 ~/.claude/skills/trading-research/scripts/setup_venv.sh
 ```
 
-## Credentials
+### Credentials
 
-Create `~/.config/tradingagents/` (chmod 700) with:
+Create `~/.config/tradingagents/` (`chmod 700`) with:
 
 `vendors.env` — core market data:
 
@@ -36,13 +66,15 @@ MARKETAUX_API_KEY=...         # headlines (free tier OK)
 SEC_EDGAR_USER_AGENT="Name email@example.com"   # SEC requires a contact UA
 ```
 
-`unusualwhales.env` (optional — enables `--options` dealer-positioning pack):
+`unusualwhales.env` (optional — unlocks `--options` dealer positioning):
 
 ```
 UNUSUAL_WHALES_API_KEY=...
 ```
 
-`snaptrade.env` (optional — position-aware reporting; omit to run position-blind):
+`snaptrade.env` (optional — unlocks position-aware reports; omit to run
+position-blind). Link your brokerages once with
+`.venv/bin/python scripts/vendors/snaptrade_setup.py`:
 
 ```
 SNAPTRADE_CLIENT_ID=...
@@ -57,21 +89,23 @@ Set the track-record ledger path (shell profile or Claude Code env):
 export TRADING_RESEARCH_LEDGER=~/trading-reports/ledger.jsonl
 ```
 
-## Run
+### Use
 
 In Claude Code:
 
 ```
-/trading-research NVDA
-/trading-research MRVL --options
+/trading-research NVDA               # full equity report
+/trading-research MRVL --options     # + dealer-positioning pack
+/trading-research MRVL --options-only  # zero-LLM options audit block, no rating
 ```
 
-Missing sources degrade gracefully (named `MISSING`/`DEGRADED` sections), never
-silently. Run artifacts land in `runs/<TICKER>-<date>-<hhmm>/` (git-ignored —
-they can contain live account data if SnapTrade is configured).
+Reports render as a styled HTML page plus canonical markdown; run artifacts land
+in `runs/<TICKER>-<date>-<hhmm>/` (git-ignored — they can contain live account
+data when SnapTrade is configured).
 
-## Scope notes
+### Scope notes
 
 - Single-ticker research is fully portable. The batch/portfolio drivers under
   `scripts/batch/` pin the author's machine paths — treat them as reference.
-- Every access is read-only; no order or trade endpoint is ever referenced.
+- Every broker access is read-only; no order or trade endpoint is ever
+  referenced (asserted by tests).
