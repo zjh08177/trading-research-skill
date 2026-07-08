@@ -91,20 +91,24 @@ instead, for example `~/.agents/skills/trading-research`.
 
 ### Configure Credentials
 
-Create a private config directory:
+Create a private config directory and point the vendor CLIs at it:
 
 ```bash
-mkdir -p ~/.config/tradingagents
-chmod 700 ~/.config/tradingagents
+mkdir -p ~/.config/trading-research
+chmod 700 ~/.config/trading-research
+
+export TRADING_RESEARCH_VENDORS_ENV=~/.config/trading-research/vendors.env
+export UNUSUALWHALES_ENV=~/.config/trading-research/unusualwhales.env
+export SNAPTRADE_ENV=~/.config/trading-research/snaptrade.env
 ```
 
-`~/.config/tradingagents/vendors.env`:
+`~/.config/trading-research/vendors.env`:
 
 ```bash
 # Required for the main equity path.
 SCHWAB_CLIENT_ID=...
 SCHWAB_CLIENT_SECRET=...
-SCHWAB_TOKEN_PATH=~/.config/tradingagents/schwab_token.json
+SCHWAB_TOKEN_PATH=~/.config/trading-research/schwab_token.json
 
 # Required by SEC EDGAR; this is a contact string, not a paid key.
 SEC_EDGAR_USER_AGENT="Name email@example.com"
@@ -117,14 +121,14 @@ MARKETAUX_API_KEY=...
 Optional options data:
 
 ```bash
-# ~/.config/tradingagents/unusualwhales.env
+# ~/.config/trading-research/unusualwhales.env
 UNUSUAL_WHALES_API_KEY=...
 ```
 
 Optional position-aware reporting:
 
 ```bash
-# ~/.config/tradingagents/snaptrade.env
+# ~/.config/trading-research/snaptrade.env
 SNAPTRADE_CLIENT_ID=...
 SNAPTRADE_CONSUMER_KEY=...
 SNAPTRADE_USER_ID=...

@@ -8,9 +8,10 @@ sys.path.insert(0, VENDORED)
 
 from dotenv import load_dotenv
 
-CREDS_PATH = os.environ.get(
-    "TRADINGAGENTS_VENDORS_ENV",
-    os.path.join(os.path.expanduser("~"), ".config", "tradingagents", "vendors.env"),
+CREDS_PATH = (
+    os.environ.get("TRADING_RESEARCH_VENDORS_ENV")
+    or os.environ.get("TRADINGAGENTS_VENDORS_ENV")
+    or os.path.join(os.path.expanduser("~"), ".config", "tradingagents", "vendors.env")
 )
 load_dotenv(CREDS_PATH, override=False)
 
