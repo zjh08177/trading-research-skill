@@ -5,13 +5,18 @@
 [![Decision support](https://img.shields.io/badge/use-decision%20support-f59e0b)](#disclaimer)
 [![Read-only brokers](https://img.shields.io/badge/broker%20access-read--only-16a34a)](#safeguards)
 
-Personal TradingAgents v2: a Claude Code skill that turns a ticker into a
-cited, adversarial, position-aware research memo you can audit.
+Audit-first trading research for Claude Code: one ticker in, one cited,
+adversarial, position-aware memo out.
 
-Ask for `/trading-research NVDA`. The skill builds a sealed market-data pack,
-sends it through independent analysts, forces a bull/bear debate, computes risk
-levels in ATR units, asks an N=3-5 judge ensemble to vote, renders a report, and
-logs the result to a look-ahead-safe track record.
+The unique strength is discipline over spectacle. Instead of presenting a broad
+agent framework, named investor personas, or a simulated fund, this skill turns
+every run into auditable artifacts: a sealed data pack, fact-tagged numbers,
+independent analyst briefs, a bull/bear debate, a computed risk box, a blind
+N=3-5 judge vote, deterministic QA, and a look-ahead-safe ledger.
+
+Ask for `/trading-research NVDA`. The skill builds the evidence first, makes the
+agents argue from the same source material, publishes the vote distribution, and
+keeps your actual position out of the rating path.
 
 It is not an autotrader. It never places orders. It exists to make the model
 show its evidence, publish dissent, and keep score.
@@ -20,18 +25,16 @@ show its evidence, publish dissent, and keep score.
   <img src="assets/architecture-xiaohei.png" alt="A sealed data pack moves through analysts, bull and bear debate, computed risk, judge ensemble, final report, and ledger." width="900">
 </p>
 
-## Why This Exists
+## How It Differs
 
-Popular projects such as [TradingAgents](https://github.com/TauricResearch/TradingAgents)
-and [ai-hedge-fund](https://github.com/virattt/ai-hedge-fund) proved that
-multi-agent finance workflows are compelling. This repo is narrower and more
-personal: it is a local research desk for one investor, one ticker, one
-decision at a time.
+Popular community finance-agent projects prove that multi-agent research
+workflows are compelling. This repo is narrower and more personal: it is a local
+research desk for one investor, one ticker, one decision at a time.
 
 | If you like... | This repo emphasizes... |
 | --- | --- |
 | Multi-agent trading frameworks | A portable Claude Code skill with durable run artifacts |
-| AI hedge-fund simulations | A decision memo, not a simulated fund or order engine |
+| AI fund simulations | A decision memo, not a simulated fund or order engine |
 | Agent debates | Published bull/bear disagreement and judge vote distribution |
 | Automated recommendations | Fail-loud citations, explicit data gaps, and a NO-CALL path |
 | Portfolio context | Position-aware framing while keeping the rating position-blind |
