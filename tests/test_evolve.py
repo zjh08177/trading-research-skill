@@ -76,18 +76,66 @@ def test_evolve_indexes_real_corpus_by_run_id_not_ledger_report_path(tmp_path):
     signals = json.loads((out / "20-signals.json").read_text())
     assert signals["calibration"]["status"] == "dormant"
     assert signals["coverage"]["total_runs"] == 3
+    assert signals["cost_latency"]["n"] == 2
+    assert signals["cost_latency"]["wall_s"]["max"] == 1200
+    assert signals["cost_latency"]["cost_usd"]["sum"] == 5.9
     gap = signals["clusters"]["gaps"][0]
     assert gap["n"] == 1 and gap["evidence_run_ids"] == ["NVDA-2026-07-05-1300"]
 
     retro = (out / "30-retro.md").read_text()
     assert "Coverage" in retro
     assert "P5 MISSING(news)" in retro
+    assert "Cost / latency" in retro
+    assert "wall_s max 1200" in retro
+    assert "cost_usd sum 5.90" in retro
     assert "calibration dormant" in retro.lower()
     assert "hit-rate" not in retro.lower()
     assert "mean alpha" not in retro.lower()
     vault_files = list(vault_evolve.glob("evolve-*.md"))
     assert len(vault_files) == 1
     assert vault_files[0].read_text() == retro
+
+
+def test_evolve_preserves_usage_host_mode_status_for_ledgered_run(tmp_path):
+    runs = tmp_path / "runs"
+    _run_dir(runs, "CRWD-2026-07-07-1200")
+    ledger = tmp_path / "ledger.jsonl"
+    _jsonl(ledger, [
+        {"run_id": "CRWD-2026-07-07-1200", "ticker": "CRWD", "date_utc": "2026-07-07",
+         "mode_rating": "Hold", "distribution": {"Hold": 3}, "spread": 0,
+         "no_call": True, "gaps": ["options_skipped"], "report_path": "bogus.md",
+         "wall_s": 900, "cost_usd": 1.25},
+    ])
+    usage = tmp_path / "usage.jsonl"
+    _jsonl(usage, [
+        {"v": 1, "event": "end", "invocation_id": "u-crwd", "ts": "2026-07-07T19:00:00Z",
+         "host": "cursor", "source": "skill-helper", "skill": "trading-research",
+         "mode": "options", "ticker": "CRWD", "run_id": "CRWD-2026-07-07-1200",
+         "run_dir": str(runs / "CRWD-2026-07-07-1200"), "status": "failed",
+         "report_paths": [str(runs / "CRWD-2026-07-07-1200" / "60-report.md")]},
+    ])
+    out = tmp_path / "out"
+    r = subprocess.run(
+        [sys.executable, str(SCRIPTS / "evolve.py"),
+         "--usage-ledger", str(usage), "--ledger", str(ledger),
+         "--runs-dir", str(runs), "--outdir", str(out), "--before", "2026-07-08"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    index = json.loads((out / "10-corpus-index.json").read_text())
+    row = index["runs"][0]
+    assert row["join_status"] == "ledgered"
+    assert row["host"] == "cursor"
+    assert row["mode"] == "options"
+    assert row["status"] == "failed"
+    assert row["ledger"]["no_call"] is True
+
+    signals = json.loads((out / "20-signals.json").read_text())
+    assert signals["coverage"]["by_host"] == {"cursor": 1}
+    assert signals["coverage"]["by_mode"] == {"options": 1}
+    assert signals["coverage"]["by_status"] == {"failed": 1}
+    assert signals["clusters"]["no_call"][0]["evidence_run_ids"] == ["CRWD-2026-07-07-1200"]
 
 
 def test_evolve_warns_on_duplicate_run_id_and_handles_batch_parent(tmp_path):

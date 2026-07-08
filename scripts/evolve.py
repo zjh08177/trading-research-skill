@@ -101,22 +101,6 @@ def build_index(usage_rows, ledger_rows, runs_dir, before):
 
     runs = []
     seen = set()
-    for rid, led in sorted(ledger_by_id.items()):
-        report_path = report_for_run(runs_dir, rid)
-        runs.append({
-            "run_id": rid,
-            "ticker": led.get("ticker"),
-            "date_utc": led.get("date_utc"),
-            "host": "unknown",
-            "mode": "report",
-            "status": "success",
-            "join_status": "ledgered",
-            "report_path": report_path,
-            "report_resolved": bool(report_path and Path(report_path).exists()),
-            "ledger": led,
-        })
-        seen.add(rid)
-
     for event in usage_rows:
         if event.get("mode") == "evolve":
             continue
@@ -141,16 +125,36 @@ def build_index(usage_rows, ledger_rows, runs_dir, before):
         if not rid or rid in seen:
             continue
         report_path = report_for_run(runs_dir, rid, event)
+        led = ledger_by_id.get(rid)
         runs.append({
             "run_id": rid,
-            "ticker": event.get("ticker"),
-            "date_utc": str(d) if d else None,
+            "ticker": event.get("ticker") or (led or {}).get("ticker"),
+            "date_utc": str(d) if d else (led or {}).get("date_utc"),
             "host": event.get("host", "unknown"),
             "mode": event.get("mode"),
             "status": event.get("status"),
-            "join_status": "ledgered" if rid in ledger_by_id else "unledgered",
+            "join_status": "ledgered" if led else "unledgered",
             "report_path": report_path,
             "report_resolved": bool(report_path and Path(report_path).exists()),
+            **({"ledger": led} if led else {}),
+        })
+        seen.add(rid)
+
+    for rid, led in sorted(ledger_by_id.items()):
+        if rid in seen:
+            continue
+        report_path = report_for_run(runs_dir, rid)
+        runs.append({
+            "run_id": rid,
+            "ticker": led.get("ticker"),
+            "date_utc": led.get("date_utc"),
+            "host": "unknown",
+            "mode": "report",
+            "status": "success",
+            "join_status": "ledgered",
+            "report_path": report_path,
+            "report_resolved": bool(report_path and Path(report_path).exists()),
+            "ledger": led,
         })
         seen.add(rid)
 
@@ -164,6 +168,40 @@ def _cluster_map(items):
         out.append({"key": key, "n": len(set(ids)), "evidence_run_ids": sorted(set(ids))})
     out.sort(key=lambda x: (-x["n"], x["key"]))
     return out
+
+
+def _numeric_summary(values):
+    values = [float(v) for v in values if isinstance(v, (int, float))]
+    if not values:
+        return {"n": 0}
+    return {
+        "n": len(values),
+        "min": min(values),
+        "max": max(values),
+        "avg": sum(values) / len(values),
+        "sum": sum(values),
+    }
+
+
+def _cost_latency(runs, ledger_by_id):
+    wall, cost = [], []
+    evidence = set()
+    for row in runs:
+        led = row.get("ledger") or ledger_by_id.get(row.get("run_id"), {})
+        wall_s = row.get("wall_s", led.get("wall_s"))
+        cost_usd = row.get("cost_usd", led.get("cost_usd"))
+        if isinstance(wall_s, (int, float)):
+            wall.append(wall_s)
+            evidence.add(row["run_id"])
+        if isinstance(cost_usd, (int, float)):
+            cost.append(cost_usd)
+            evidence.add(row["run_id"])
+    return {
+        "n": len(evidence),
+        "evidence_run_ids": sorted(evidence),
+        "wall_s": _numeric_summary(wall),
+        "cost_usd": _numeric_summary(cost),
+    }
 
 
 def build_signals(index, ledger_path, before):
@@ -207,6 +245,7 @@ def build_signals(index, ledger_path, before):
             "high_spread": [{"key": "spread>=2", "n": len(set(high_spread)),
                              "evidence_run_ids": sorted(set(high_spread))}] if high_spread else [],
         },
+        "cost_latency": _cost_latency(runs, index["ledger_by_id"]),
         "calibration": calibration,
     }
 
@@ -234,6 +273,22 @@ def render_retro(signals, before):
             row = cluster[0]
             lines.append(f"- {row['key']} — n={row['n']}; evidence: {', '.join(row['evidence_run_ids'])}")
     if not signals["clusters"]["no_call"] and not signals["clusters"]["high_spread"]:
+        lines.append("- none")
+    lines += ["", "## Cost / latency"]
+    cl = signals["cost_latency"]
+    if cl["n"]:
+        wall = cl["wall_s"]
+        cost = cl["cost_usd"]
+        wall_line = "wall_s none"
+        cost_line = "cost_usd none"
+        if wall.get("n"):
+            wall_line = (f"wall_s max {wall['max']:.0f}, avg {wall['avg']:.1f} "
+                         f"(n={wall['n']})")
+        if cost.get("n"):
+            cost_line = (f"cost_usd sum {cost['sum']:.2f}, avg {cost['avg']:.2f} "
+                         f"(n={cost['n']})")
+        lines.append(f"- {wall_line}; {cost_line}; evidence: {', '.join(cl['evidence_run_ids'])}")
+    else:
         lines.append("- none")
     lines += ["", "## Calibration"]
     cal = signals["calibration"]

@@ -27,6 +27,13 @@ def _lines(path):
     return [json.loads(ln) for ln in path.read_text().splitlines() if ln.strip()]
 
 
+def _export_value(stdout):
+    for line in stdout.splitlines():
+        if line.startswith("export TRADING_RESEARCH_INVOCATION_ID="):
+            return line.split("=", 1)[1]
+    raise AssertionError(f"missing invocation export in stdout: {stdout!r}")
+
+
 def test_detect_host_prefers_codex_over_nested_claude(tmp_path):
     r = _run_usage(
         tmp_path,
@@ -125,7 +132,7 @@ def test_end_reuses_invocation_id_and_adds_report_path(tmp_path):
         str(run_dir),
     )
     assert start.returncode == 0, start.stderr
-    invocation_id = start.stdout.strip().split("=", 1)[1]
+    invocation_id = _export_value(start.stdout)
     end = _run_usage(
         tmp_path,
         "end",
@@ -148,6 +155,37 @@ def test_end_reuses_invocation_id_and_adds_report_path(tmp_path):
     assert rows[1]["invocation_id"] == invocation_id
     assert rows[1]["status"] == "success"
     assert rows[1]["report_paths"] == [str(run_dir / "60-report.md")]
+
+
+def test_batch_child_starts_ignore_parent_env_id_and_share_batch_id(tmp_path):
+    ledger = tmp_path / "usage" / "invocations.jsonl"
+    parent_id = "parent-should-not-leak"
+    batch_id = "batch-1"
+    ids = []
+    for ticker in ("AAPL", "MSFT"):
+        r = _run_usage(
+            tmp_path,
+            "start",
+            "--mode",
+            "report",
+            "--ticker",
+            ticker,
+            "--run-id",
+            f"{ticker}-2026-07-07-1300",
+            "--run-dir",
+            str(tmp_path / "runs" / f"{ticker}-2026-07-07-1300"),
+            "--batch-id",
+            batch_id,
+            env={"TRADING_RESEARCH_INVOCATION_ID": parent_id},
+        )
+        assert r.returncode == 0, r.stderr
+        ids.append(_export_value(r.stdout))
+
+    assert len(set(ids)) == 2
+    assert parent_id not in ids
+    rows = _lines(ledger)
+    assert {row["batch_id"] for row in rows} == {batch_id}
+    assert {row["invocation_id"] for row in rows} == set(ids)
 
 
 def test_usage_report_counts_orphan_start_as_aborted(tmp_path):
@@ -176,3 +214,23 @@ def test_usage_report_counts_orphan_start_as_aborted(tmp_path):
     assert "cursor" in r.stdout and "aborted" in r.stdout
     assert "codex" in r.stdout and "success" in r.stdout
     assert "hook_only" in r.stdout
+
+
+def test_usage_report_skips_malformed_jsonl_line(tmp_path):
+    ledger = tmp_path / "usage.jsonl"
+    ledger.write_text(
+        "not json {{{\n"
+        + json.dumps({"v": 1, "event": "host_hook", "invocation_id": "h",
+                      "ts": "2026-07-07T12:00:00Z", "host": "claude-code",
+                      "source": "claude-hook", "skill": "trading-research",
+                      "status": "hook_only"})
+        + "\n"
+    )
+    r = subprocess.run(
+        [sys.executable, str(SCRIPTS / "usage_report.py"), "--ledger", str(ledger)],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0
+    assert "hook_only" in r.stdout
+    assert "skipped malformed usage line 1" in r.stderr

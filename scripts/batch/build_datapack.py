@@ -64,9 +64,7 @@ def run_usage_start(ticker, kind, run_id, run_dir, batch_id, position_aware):
         return None
     for line in p.stdout.splitlines():
         if line.startswith("export TRADING_RESEARCH_INVOCATION_ID="):
-            invocation_id = line.split("=", 1)[1].strip()
-            os.environ["TRADING_RESEARCH_INVOCATION_ID"] = invocation_id
-            return invocation_id
+            return line.split("=", 1)[1].strip()
     sys.stderr.write(f"WARN: usage.py start returned no invocation id for {ticker}\n")
     return None
 

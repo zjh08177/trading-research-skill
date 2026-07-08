@@ -124,7 +124,7 @@ def locked_append(path, row):
             finally:
                 os.close(fd)
     except OSError as e:
-        sys.stdout.write(f"=== MANUAL-USAGE-APPEND REQUIRED ({e}) ===\n{line}\n")
+        sys.stderr.write(f"=== MANUAL-USAGE-APPEND REQUIRED ({e}) ===\n{line}\n")
         raise SystemExit(2)
 
 
@@ -155,9 +155,10 @@ def build_row(event, args, env=None):
     env = env or os.environ
     host, signals = detect_host(env, args.cwd)
     source = "claude-hook" if event == "host_hook" else "skill-helper"
-    invocation_id = args.invocation_id or env.get("TRADING_RESEARCH_INVOCATION_ID")
-    if event == "start" and not invocation_id:
-        invocation_id = str(uuid.uuid4())
+    if event == "start":
+        invocation_id = args.invocation_id or str(uuid.uuid4())
+    else:
+        invocation_id = args.invocation_id or env.get("TRADING_RESEARCH_INVOCATION_ID")
     if event in {"end", "fail"} and not invocation_id:
         sys.stderr.write("ERROR: missing invocation id (pass --invocation-id or env)\n")
         raise SystemExit(2)

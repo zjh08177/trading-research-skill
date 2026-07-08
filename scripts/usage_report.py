@@ -2,6 +2,7 @@
 """Summarize the trading-research usage JSONL."""
 import argparse
 import json
+import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,10 +16,13 @@ def read_jsonl(path):
     rows = []
     if not path.exists():
         return rows
-    for ln in path.read_text().splitlines():
+    for i, ln in enumerate(path.read_text().splitlines(), 1):
         if not ln.strip():
             continue
-        rows.append(json.loads(ln))
+        try:
+            rows.append(json.loads(ln))
+        except json.JSONDecodeError:
+            sys.stderr.write(f"WARN: skipped malformed usage line {i} in {path}\n")
     return rows
 
 
