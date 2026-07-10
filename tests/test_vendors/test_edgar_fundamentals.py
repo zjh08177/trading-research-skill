@@ -159,10 +159,45 @@ def test_asof_per_fact_is_period_end(facts):
 
 
 # --- asof windowing: quarters after --asof are excluded ---
+# The 2025-12-31 quarter (val 130) ended before this cutoff but was FILED
+# 2026-02-01 (after it) -> the filing-date gate excludes it too (AC3), so the
+# window falls back to the 4 preceding quarters.
 def test_asof_windowing(facts):
     out = ef.build_facts(facts, "2026-01-15")
-    assert out["P3.revenue_ttm"]["v"] == 100 + 110 + 120 + 130
-    assert out["P3.revenue_ttm"]["asof"] == "2025-12-31"
+    assert out["P3.revenue_ttm"]["v"] == 90 + 100 + 110 + 120
+    assert out["P3.revenue_ttm"]["asof"] == "2025-09-30"
+
+
+# --- AC3: filed-after-cutoff row (period end before cutoff) is excluded ---
+def test_ac3_filed_after_cutoff_excluded(facts):
+    rows = facts["facts"]["us-gaap"][REV_TAG]["units"]["USD"]
+    rows.append({
+        "start": "2026-04-01", "end": "2026-06-30", "val": 9999,
+        "form": "10-Q", "filed": "2026-07-15", "fy": 2026, "fp": "Q2",
+    })
+    out = ef.build_facts(facts, ASOF)
+    # unaffected: the leaked row's period ends before ASOF but was filed after it
+    assert out["P3.revenue_ttm"]["v"] == REV_TTM
+    assert out["P3.latest_10q_filed"]["v"] == "2026-06-01"
+
+
+# --- AC3: row missing 'filed' entirely is excluded under asof ---
+def test_ac3_missing_filed_excluded(facts):
+    rows = facts["facts"]["us-gaap"][REV_TAG]["units"]["USD"]
+    rows.append({
+        "start": "2026-04-01", "end": "2026-06-30", "val": 111,
+        "form": "10-Q", "fy": 2026, "fp": "Q2",
+    })
+    out = ef.build_facts(facts, ASOF)
+    assert out["P3.revenue_ttm"]["v"] == REV_TTM
+
+
+# --- AC3: emitted replay facts carry known_at = max filed of contributing rows ---
+def test_ac3_known_at_present_on_replay_facts(facts):
+    out = ef.build_facts(facts, ASOF)
+    # last 4 discrete quarters used for REV_TTM: ends 2025-06-30/09-30/12-31,
+    # 2026-03-31(restated) filed 2025-08-01/2025-11-01/2026-02-01/2026-06-01
+    assert out["P3.revenue_ttm"]["known_at"] == "2026-06-01"
 
 
 # --- no-data paths -> exit 3 ---
@@ -188,7 +223,8 @@ def test_main_success_stdout_contract(monkeypatch, capsys, ua):
     assert parsed
     for key, val in parsed.items():
         assert key.startswith("P3.")
-        assert set(val) == {"v", "unit", "asof", "src"}
+        # --asof is set -> replay mode -> every fact carries known_at too
+        assert set(val) == {"v", "unit", "asof", "src", "known_at"}
         assert val["v"] is not None
         assert val["src"] == "sec-edgar"
 
