@@ -6,6 +6,10 @@ __pycache__/
 
 # Run artifacts — contain LIVE ACCOUNT DATA (positions, $ amounts) + reports. Never commit.
 runs/
+reports/
+
+# Browser-automation (playwright-mcp) scratch logs
+.playwright-mcp/
 
 # Skill-owned venv (bootstrap: scripts/setup_venv.sh)
 .venv/
