@@ -147,11 +147,14 @@ export TRADING_RESEARCH_LEDGER=~/trading-reports/ledger.jsonl
 /trading-research NVDA                 # full single-ticker memo
 /trading-research MRVL --options       # add dealer-positioning context
 /trading-research MRVL --options-only  # zero-LLM options audit, no rating
+/trading-research NVDA 2026-01-05      # historical as-of replay (point-in-time only, no WebSearch)
 /trading-research --evolve             # local usage retrospective
 ```
 
 Reports render as styled HTML plus canonical markdown. Run artifacts live under
-`runs/<TICKER>-<date>-<hhmm>/`; final reports copy to your reports vault.
+`runs/<TICKER>-<date>-<hhmm>/`; final reports copy to your reports vault. Append
+a past date (`YYYY-MM-DD` or `YYYY/MM/DD`) to replay a ticker as of that day;
+replay reports publish separately to `reports/replay/<TICKER>/`.
 
 ## Pipeline
 

@@ -196,3 +196,63 @@ def test_live_default_path_still_writes_positions_and_options(tmp_path, monkeypa
     datapack = json.loads((run_dir / "10-datapack.json").read_text())
     assert "P4.atm_iv_near" in datapack
     assert "schwab_quote" in calls
+
+
+# --- v2.5 historical as-of replay: workflow + host doc wiring -----------------
+
+def test_portfolio_workflow_loads_and_fails_closed_on_scope():
+    text = (ROOT / "workflows" / "portfolio_pipeline.js").read_text()
+    assert "00-scope.json" in text
+    # fail-closed: a missing/unparseable/mismatched scope file must throw, not
+    # silently continue.
+    assert "throw new Error" in text
+    assert "SCOPE_MISMATCH" in text
+
+
+def test_portfolio_workflow_carries_mode_onto_both_usage_terminal_calls():
+    text = (ROOT / "workflows" / "portfolio_pipeline.js").read_text()
+    # findings guardrail #3: --mode must reach BOTH usage.py end and usage.py
+    # fail, not just one of them, so replay terminal usage rows keep mode=replay.
+    assert "usage.py end" in text
+    assert "usage.py fail" in text
+    assert "--mode" in text
+    assert "it.mode" in text
+
+
+def test_portfolio_workflow_replay_qa_command_and_websearch_ban():
+    text = (ROOT / "workflows" / "portfolio_pipeline.js").read_text()
+    assert "qa_check.py --replay --asof-cutoff" in text
+    assert "Do not use WebSearch or current web data" in text
+    assert "if Marketaux is empty, mark DATA GAP" in text
+    # writer/QA prompts must not reference 15-position.json for a replay run
+    assert "15-position.json anywhere" in text or "not reference or read 15-position.json" in text
+
+
+def test_rewrite_writers_rejects_replay_mode():
+    text = (ROOT / "workflows" / "rewrite_writers.js").read_text()
+    assert "mode === 'replay'" in text or 'mode === "replay"' in text
+    assert "rejected" in text.lower()
+
+
+def test_skill_documents_replay_date_grammar_and_banner():
+    text = (ROOT / "SKILL.md").read_text()
+    assert "Historical as-of replay" in text
+    assert "YYYY-MM-DD" in text
+    assert "YYYY/MM/DD" in text
+    assert "WebSearch is banned in replay mode" in text
+    assert "Historical replay" in text
+    assert "qa_check.py --replay --asof-cutoff" in text
+
+
+def test_readme_documents_replay_invocation():
+    text = (ROOT / "README.md").read_text()
+    assert "replay" in text.lower()
+    assert "2026-01-05" in text or "YYYY-MM-DD" in text
+
+
+def test_cursor_command_documents_replay_branch():
+    text = (ROOT / "hosts" / "cursor-command.md").read_text()
+    assert "Historical as-of replay" in text
+    assert "reports/replay/" in text
+    assert "WebSearch" in text
+    assert "Single-ticker only" in text

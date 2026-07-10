@@ -62,6 +62,50 @@ Artifact, and copy it to `reports/portfolio/`.
 Resume rule: on crash, stat the artifacts in order and restart at the first
 missing file. There is no resume machinery beyond this rule.
 
+## Historical as-of replay
+
+`/trading-research <TICKER> <YYYY-MM-DD>` or `/trading-research <TICKER>
+<YYYY/MM/DD>` appends a date token to the normal single-ticker invocation. A
+token equal to today resolves to the normal **live** pipeline (`mode=report`,
+unchanged). A token strictly in the past resolves to **replay** mode
+(`mode=replay`): the pipeline reconstructs the report as if run on that date,
+using only information that would have been available then. A future date is
+rejected.
+
+**Source contract (point-in-time only, enforced by `scripts/replay.py`):**
+- Price/technicals come from the first **settled** bar at or before the
+  requested cutoff — never a live/last-trade quote. `P1.last` is forbidden in
+  a replay pack; use `P1.price` (settled close).
+- SEC/fundamentals facts are filtered by **filing date** — a fact filed after
+  the cutoff is excluded even if it describes an earlier period.
+- News/sentiment (Marketaux) is filtered by **published-before-cutoff**; a
+  headline published after the cutoff never enters the pack.
+- Options and any live position are entirely omitted: `P4.*`, `P8.*`, and all
+  `H1.*` position facts are forbidden, and `15-position.json`/`.md` are never
+  written for a replay run.
+- The run folder gets a `00-scope.json`/`.md` recording `mode`,
+  `requested_cutoff`, `effective_market_asof`, `entry_market_asof`, and
+  `generated_at` — every downstream agent stage must load and trust this file
+  before doing anything else.
+
+**WebSearch is banned in replay mode.** The sentiment/analyst role must not
+use WebSearch or any current web data; if Marketaux returns nothing, mark
+`DATA GAP` rather than reaching for live information. The writer and QA
+stages must not reference or read `15-position.json` (it does not exist for
+a replay run). QA runs in replay-aware mode:
+`qa_check.py --replay --asof-cutoff <requested_cutoff> 60-report.md 10-datapack.json`
+(no position-pack argument).
+
+**Report banner.** Every replay report opens with a banner stating this is a
+**Historical replay**, followed by the requested cutoff, the effective market
+as-of, the entry market as-of, and the `generated_at` timestamp — all four
+fields, before the executive summary.
+
+Replay reports publish to **`reports/replay/<TICKER>/`** (never
+`reports/single-ticker/<TICKER>/`) and append to a separate replay ledger
+sidecar (`scripts/batch/publish_replay.py`, `ledger.py append --replay`) —
+mechanically isolated from the live ledger and live report tree.
+
 ## Usage capture + evolve mode (v2.4a Flywheel)
 
 Every run that reaches Stage 1 writes a metadata-only local usage row. After
