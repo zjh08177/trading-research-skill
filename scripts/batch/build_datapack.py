@@ -21,6 +21,8 @@ USAGE = SK + "/scripts/usage.py"
 
 sys.path.insert(0, SK + "/scripts")
 import replay  # noqa: E402 - historical as-of replay contract (parse_cutoff_token/mode_for_cutoff/write_scope)
+import signal_registry  # noqa: E402 - feed registry (D2, tech-solution §2)
+import distillers  # noqa: E402 - distiller contract (R1-R5, tech-solution §3)
 
 # _DEFAULT_* are the fixed argparse defaults for --asof/--stamp/--ledger/--holdings
 # (main(), below) — unchanged from the values these used to be hardcoded to.
@@ -38,6 +40,7 @@ LEDGER = _DEFAULT_LEDGER
 ASOF = _DEFAULT_ASOF
 STAMP = _DEFAULT_STAMP
 HOLD = _DEFAULT_HOLD
+PROFILE = "full"
 
 
 def fact(v, unit, asof, src):
@@ -110,6 +113,16 @@ def add_options(ticker, kind, facts, gaps, options):
     if kind not in ("equity", "etf"):
         gaps.append(f"P8 MISSING(by-design: {kind} has no options chain)")
         return
+    # R1/R3/AC1: raw UW P8 must only enter the pack when its capping distiller
+    # (tier-2 `uw.options_depth`) is active for the current profile. `--profile
+    # lean` drops tier>1, so fetching raw P8 there would ship an uncapped vendor
+    # series. Bind fetch+cap under one decision: no active capper → no raw P8.
+    _active_ids = {e.feed_id for e in signal_registry.load_registry(
+        profile=PROFILE, options=True, mode="live")}
+    if "uw.options_depth" not in _active_ids:
+        gaps.append(f"P8 omitted (profile={PROFILE}: tier-2 UW options-depth not in "
+                    "footprint; raw P8 suppressed to preserve the no-raw-tape invariant)")
+        return
     spot = facts.get("P1.last", {}).get("v") or facts.get("P1.price", {}).get("v")
     if not spot:
         gaps.append("P8 MISSING(no spot price for uw_options); Schwab P4 fallback")
@@ -142,6 +155,77 @@ def add_options(ticker, kind, facts, gaps, options):
     else:
         gaps.append(f"P8 MISSING(uw_options exit {ex}: {err}); Schwab P4 fallback")
         schwab_p4()
+
+
+def _ctx_for(entry, ctx_base, facts):
+    """Build the frozen DistillCtx a distiller reads (tech-solution §3.2)."""
+    spot = (facts.get("P1.last") or {}).get("v") or (facts.get("P1.price") or {}).get("v")
+    atr = (facts.get("P2.atr14") or {}).get("v")
+    return distillers.DistillCtx(
+        ticker=ctx_base["ticker"], kind=ctx_base["kind"], asof=ctx_base["asof"],
+        mode=ctx_base["mode"], facts=facts, spot=spot, atr=atr,
+        max_rows=entry.max_rows, max_tokens=entry.max_tokens, entry=entry,
+    )
+
+
+def apply_registry_distillers(facts, gaps, degraded, ctx_base, *, mode, profile, options,
+                               registry=None):
+    """Generic loop (tech-solution §3.4): iterate the active feed registry,
+    fetch/derive each distiller feed's raw input, and merge its Signals into
+    `facts`/`gaps` in place. Native feeds (`distiller is None`) are already
+    fetched by the hand-written code above/below this call and are skipped
+    here (AC5 -- registry-ization is additive, not a rewrite of native fetch).
+
+    In replay mode, every registry-managed distiller feed dropped solely for
+    being `replay_safe=False` gets a named "omitted in replay (live-only)"
+    Data-Gaps line (AC4/R14) -- computed by diffing against what WOULD be
+    active if capability were unconstrained (mode="live", options=True),
+    so profile/options-driven omissions (unrelated to replay) are not
+    mislabeled as replay omissions.
+    """
+    active = signal_registry.load_registry(profile=profile, options=options, mode=mode,
+                                            registry=registry)
+
+    if mode == "replay":
+        full_active = signal_registry.load_registry(profile=profile, options=True,
+                                                      mode="live", registry=registry)
+        active_ids = {e.feed_id for e in active}
+        for e in full_active:
+            if e.feed_id not in active_ids and e.distiller is not None and not e.replay_safe:
+                gaps.append(f"{e.feed_id} omitted in replay (live-only)")
+
+    for e in active:
+        if e.distiller is None:
+            continue
+        ctx = _ctx_for(e, ctx_base, facts)
+        if e.relevance_gate is not None and not e.relevance_gate(ctx):
+            gaps.append(f"{e.feed_id} skipped (relevance gate not met)")
+            continue
+        if e.source == "derive":
+            raw = None
+        elif e.source == "wrap:P8":
+            raw = {k: v for k, v in facts.items() if k.startswith("P8.")}
+        elif e.source.startswith("cli:"):
+            fetch_args = e.fetch_args(ctx) if e.fetch_args else []
+            ex, raw, err = run_cli(e.source.split(":", 1)[1], fetch_args)
+            if ex != 0:
+                gaps.append(f"{e.feed_id} MISSING({err})")
+                continue
+            if isinstance(raw, dict) and len(raw) == 1:
+                (only_key,) = raw.keys()
+                if isinstance(only_key, str) and only_key.startswith("_"):
+                    raw = raw[only_key]
+        else:
+            gaps.append(f"{e.feed_id} skipped (unknown source {e.source})")
+            continue
+        # Failure isolation: a single distiller raising must degrade to a named
+        # gap, never abort the batch (would lose all remaining tickers).
+        try:
+            sigs = e.distiller(raw, ctx)
+        except Exception as exc:  # noqa: BLE001 - fail-loud-as-gap by design
+            gaps.append(f"{e.feed_id} MISSING(distiller error: {type(exc).__name__}: {exc})")
+            continue
+        distillers.merge_signals(facts, gaps, sigs, e.cite_src)
 
 
 def build_facts(ticker, kind, options=False):
@@ -203,6 +287,9 @@ def build_facts(ticker, kind, options=False):
         xline = f"CROSS-CHECK {ok} (schwab {sw} vs tiingo {oob}, rel {rel*100:.4f}% {'<=' if ok=='OK' else '>'} 0.5%)"
         if ok == "FAIL":
             gaps.append(xline)
+    ctx_base = {"ticker": ticker, "kind": kind, "asof": ASOF, "mode": "live"}
+    apply_registry_distillers(facts, gaps, degraded, ctx_base,
+                               mode="live", profile=PROFILE, options=options)
     return facts, gaps, degraded, xline
 
 
@@ -312,12 +399,15 @@ def build_facts_replay(ticker, kind, cutoff):
         xline = f"CROSS-CHECK {ok} (schwab {sw} vs tiingo {oob}, rel {rel*100:.4f}% {'<=' if ok=='OK' else '>'} 0.5%)"
         if ok == "FAIL":
             gaps.append(xline)
+    ctx_base = {"ticker": ticker, "kind": kind, "asof": cutoff, "mode": "replay"}
+    apply_registry_distillers(facts, gaps, degraded, ctx_base,
+                               mode="replay", profile=PROFILE, options=False)
     return facts, gaps, degraded, xline, effective_market_asof
 
 
-SECT = {"P1": "P1 Quote", "P2": "P2 Technicals", "P3": "P3 Fundamentals (SEC XBRL)",
-        "P4": "P4 Options", "P5": "P5 News/events", "P6": "P6 Sentiment",
-        "P8": "P8 Dealer positioning & options (UW)"}
+SECT = {"P0": "P0 What-changed", "P1": "P1 Quote", "P2": "P2 Technicals",
+        "P3": "P3 Fundamentals (SEC XBRL)", "P4": "P4 Options", "P5": "P5 News/events",
+        "P6": "P6 Sentiment", "P8": "P8 Dealer positioning & options (UW)"}
 
 
 def render_md(ticker, kind, facts, gaps, degraded, xline, p7):
@@ -333,7 +423,7 @@ def render_md(ticker, kind, facts, gaps, degraded, xline, p7):
                 f"{' (STALE: market closed since; ' + ASOF + ' is a weekend/holiday)' if stale else ''}. "
                 f"Prior close/chg% from settled bars: {px['v'] if px else 'n/a'} close.")
         lines += [note, ""]
-    for sec in ("P1", "P2", "P3", "P4", "P5", "P6", "P8"):
+    for sec in ("P0", "P1", "P2", "P3", "P4", "P5", "P6", "P8"):
         keys = [k for k in facts if k.startswith(sec + ".")]
         if not keys:
             continue
@@ -353,6 +443,18 @@ def render_md(ticker, kind, facts, gaps, degraded, xline, p7):
         for dg in degraded:
             lines.append(f"- DEGRADED: {dg}")
     return "\n".join(lines) + "\n", run_id
+
+
+def _load_holdings(path):
+    """Flat-safe holdings loader: a missing/unreadable/malformed holdings file
+    yields {"holdings": []} (every ticker resolves flat) with a stderr
+    warning, instead of crashing main() (findings: HOLD path can go stale)."""
+    try:
+        return json.load(open(path))
+    except (FileNotFoundError, OSError, json.JSONDecodeError) as e:
+        print(f"WARNING: holdings file unavailable ({path}): {e}; all positions flat",
+              file=sys.stderr)
+        return {"holdings": []}
 
 
 def build_position(ticker, holdings):
@@ -388,11 +490,14 @@ def _build_arg_parser():
     p.add_argument("--holdings", default=_DEFAULT_HOLD)
     p.add_argument("--replay", action="store_true", default=False,
                     help="force historical as-of replay mode even if --asof is today")
+    p.add_argument("--profile", choices=["lean", "full"], default="full",
+                    help="lean=tier<=1 fast triage; full=tier<=2 (adds on-tier "
+                         "options when --options) -- D6")
     return p
 
 
 def main(argv=None):
-    global ASOF, STAMP, LEDGER, HOLD
+    global ASOF, STAMP, LEDGER, HOLD, PROFILE
     args = _build_arg_parser().parse_args(argv if argv is not None else sys.argv[1:])
 
     # Guardrail #1: normalize EVERY --asof (incl. YYYY/MM/DD) through
@@ -403,6 +508,7 @@ def main(argv=None):
     STAMP = args.stamp
     LEDGER = args.ledger
     HOLD = args.holdings
+    PROFILE = args.profile
 
     mode = "replay" if (args.replay or replay.mode_for_cutoff(cutoff_date) == "replay") else "live"
     tickers = json.loads(args.tickers)
@@ -410,8 +516,8 @@ def main(argv=None):
     summary = []
 
     if mode == "live":
-        # Byte-identical to the pre-replay live path.
-        holdings = json.load(open(HOLD))
+        # Byte-identical to the pre-replay live path (flat-safe HOLD load).
+        holdings = _load_holdings(HOLD)
         for ticker, kind in tickers:
             run_dir = f"{RUNS}/{ticker}-{ASOF}-{STAMP}"
             os.makedirs(run_dir, exist_ok=True)
