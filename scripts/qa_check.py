@@ -26,11 +26,14 @@ URL_RE = re.compile(r"https?://|www\.")
 REPORT_URL_RE = re.compile(r"https?://[^\s\)\]\>\"']+")
 
 # Phrases that leak live/web-search content into a historical replay report.
-# NOTE: deliberately does NOT match bare "latest" — legitimate datapack tags
-# like [P3.latest_10q_filed] must be allowed through untouched.
+# NOTE: deliberately does NOT match bare "latest" or bare "today's" —
+# legitimate artifacts like the datapack tag [P3.latest_10q_filed] and the
+# risk-box label "Today's move:" (the settled 1-day change on the as-of bar)
+# must pass untouched. Only discovery-intent phrasings are forbidden.
 CURRENT_DATA_PHRASES = (
     "websearch", "(discovery", "current web", "latest catalyst", "latest news",
-    "today's", "today’s",
+    "today's news", "today's catalyst", "today's headlines",
+    "today’s news", "today’s catalyst", "today’s headlines",
 )
 
 

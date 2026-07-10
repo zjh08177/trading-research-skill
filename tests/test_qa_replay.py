@@ -97,6 +97,18 @@ def test_websearch_phrase_hard_fails(tmp_path):
     assert _run(tmp_path, pack, report) != 0
 
 
+def test_risk_box_todays_move_label_not_falsely_flagged(tmp_path):
+    # The risk_box.py label "Today's move:" is the settled 1-day change on the
+    # as-of bar (cutoff-compliant) and must pass; only "today's news/catalyst/
+    # headlines" discovery phrasings are forbidden.
+    pack = _pack()
+    report = (
+        "# T\n\n**Historical replay**\n\n## Risk box\n\n"
+        "- Today's move: modest decline on the session, MACD -9.88 [P2.macd].\n"
+    )
+    assert _run(tmp_path, pack, report) == 0
+
+
 def test_bare_latest_tag_and_banner_not_falsely_flagged(tmp_path):
     # [P3.latest_10q_filed] must NOT trip the "latest ..." phrase guardrail,
     # and the fixed "Historical replay" banner must not be flagged either.
