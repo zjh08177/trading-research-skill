@@ -11,12 +11,20 @@ import json
 import os
 import subprocess
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 REQUIRED = ["run_id", "ticker", "date_utc", "as_of", "job", "mode_rating",
             "distribution", "spread", "no_call", "gaps", "report_path",
             "cost_usd", "wall_s"]
+
+# Replay ledger is a mechanically separate lane (own file, own required keys,
+# own append/resolve path) — it must never mix with the live ledger above.
+REQUIRED_REPLAY = ["run_id", "ticker", "generated_at", "requested_cutoff",
+                   "effective_market_asof", "entry_market_asof", "job",
+                   "mode_rating", "distribution", "spread", "no_call", "gaps",
+                   "judge_mix", "report_path", "cost_usd", "wall_s",
+                   "evidence_type"]
 
 DIRECTION = {"StrongSell": -1, "Sell": -1, "Hold": 0, "Buy": 1, "StrongBuy": 1}
 DEFAULT_REGIME = "claude/opus"
@@ -72,6 +80,26 @@ def sidecar_path(main_path):
     return p.with_name(p.stem + "-resolved" + p.suffix)
 
 
+def replay_path(main_path):
+    """Replay ledger beside the main one: ledger-replay.jsonl. A mechanically
+    separate file — replay rows must never land in the live ledger."""
+    p = Path(main_path)
+    return p.with_name(p.stem + "-replay" + p.suffix)
+
+
+def replay_resolved_path(main_path):
+    """Resolved-outcomes ledger for replay rows: ledger-replay-resolved.jsonl."""
+    p = Path(main_path)
+    return p.with_name(p.stem + "-replay-resolved" + p.suffix)
+
+
+def resolved_key(row):
+    """Dedup key for a replay-resolved row: lets 1td/5td/21td horizons (and
+    distinct benchmarks) for the same run_id coexist as independent rows."""
+    return (row.get("run_id"), row.get("horizon_td"), row.get("benchmark"),
+            row.get("evidence_type"))
+
+
 def _schwab_close(symbol, iso_date):
     """Default price fn: settled close via schwab_bars.py (skill venv). Returns
     None on any failure — resolve then skips the row and retries a later run."""
@@ -85,6 +113,27 @@ def _schwab_close(symbol, iso_date):
         pack = json.loads(r.stdout)
         v = pack.get("P1.price", {}).get("v")
         return float(v) if isinstance(v, (int, float)) else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _schwab_close_with_asof(symbol, iso_date):
+    """Replay price fn: settled close + the actual bar date it was settled on,
+    via schwab_bars.py (skill venv). Returns (close, bar_date) or None on any
+    failure — resolve_replay_rows then skips the row and retries a later run."""
+    try:
+        r = subprocess.run(
+            [sys.executable, str(SCRIPTS / "vendors" / "schwab_bars.py"),
+             "--ticker", symbol, "--asof", str(iso_date)],
+            capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            return None
+        pack = json.loads(r.stdout)
+        p1 = pack.get("P1.price", {})
+        v, bar_date = p1.get("v"), p1.get("asof")
+        if isinstance(v, (int, float)) and bar_date:
+            return float(v), str(bar_date)
+        return None
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
 
@@ -125,6 +174,82 @@ def resolve_rows(main_rows, resolved_ids, ticker, horizon, benchmark, asof, pric
             "realized_return": realized, "bench_return": bench, "alpha": alpha,
             "mode_rating": r.get("mode_rating"), "direction": direction,
             "hit": (alpha * direction) > 0, "judge_mix": r.get("judge_mix"),
+        })
+    return new, skipped
+
+
+def _fetch_bar(price_fn, ticker, iso_date):
+    """Call price_fn(ticker, iso_date) -> (close, actual_bar_date); normalizes a
+    None/failed fetch to (None, None) so callers have one shape to check."""
+    r = price_fn(ticker, iso_date)
+    if r is None:
+        return None, None
+    close, bar_date = r
+    return close, bar_date
+
+
+def resolve_replay_rows(rows, resolved_keys, ticker, horizon, benchmark, asof,
+                         price_fn):
+    """Pure resolver for the replay lane: same shape as resolve_rows but keyed by
+    resolved_key() (run_id, horizon_td, benchmark, evidence_type) so 1td/5td/21td
+    horizons for one run_id resolve independently. price_fn(ticker, date) returns
+    (close, actual_bar_date) — a bar date that disagrees with the requested date
+    (e.g. a holiday landing on the last settled prior close) is a hard skip; a
+    stale close is never substituted for the requested asof. Returns
+    (new_rows, skipped_count); never mutates inputs."""
+    ticker = ticker.upper()
+    new, skipped = [], 0
+    for r in rows:
+        if r.get("ticker", "").upper() != ticker:
+            continue
+        if r.get("evidence_type") != "replay" or r.get("no_call"):
+            continue
+        direction = DIRECTION.get(r.get("mode_rating"))
+        if not direction:                        # Hold (0) / unknown → not a call
+            continue
+        key = (r.get("run_id"), horizon, benchmark, "replay")
+        if key in resolved_keys:
+            continue
+        entry_date = _day(r["entry_market_asof"])
+        rdate = add_trading_days(entry_date, horizon)
+        if rdate > asof:                          # not settled yet
+            continue
+        entry_close, entry_asof = _fetch_bar(price_fn, ticker, entry_date.isoformat())
+        exit_close, exit_asof = _fetch_bar(price_fn, ticker, rdate.isoformat())
+        bench_entry_close, bench_entry_asof = _fetch_bar(price_fn, benchmark,
+                                                          entry_date.isoformat())
+        bench_exit_close, bench_exit_asof = _fetch_bar(price_fn, benchmark,
+                                                        rdate.isoformat())
+        if None in (entry_close, exit_close, bench_entry_close, bench_exit_close):
+            skipped += 1                          # settled but price-gapped — retry later
+            continue
+        if (entry_asof != entry_date.isoformat() or exit_asof != rdate.isoformat()
+                or bench_entry_asof != entry_date.isoformat()
+                or bench_exit_asof != rdate.isoformat()):
+            skipped += 1                          # holiday/stale bar — never substitute
+            continue
+        if entry_close == 0 or bench_entry_close == 0:
+            skipped += 1
+            continue
+        realized = (exit_close - entry_close) / entry_close
+        bench = (bench_exit_close - bench_entry_close) / bench_entry_close
+        alpha = realized - bench
+        new.append({
+            "run_id": r["run_id"], "ticker": ticker,
+            "requested_cutoff": r.get("requested_cutoff"),
+            "effective_market_asof": r.get("effective_market_asof"),
+            "entry_market_asof": r.get("entry_market_asof"),
+            "horizon_td": horizon, "resolution_date": rdate.isoformat(),
+            "benchmark": benchmark, "entry_close": entry_close,
+            "entry_price_asof": entry_asof, "exit_close": exit_close,
+            "exit_price_asof": exit_asof,
+            "benchmark_entry_price_asof": bench_entry_asof,
+            "benchmark_exit_price_asof": bench_exit_asof,
+            "realized_return": realized, "bench_return": bench, "alpha": alpha,
+            "mode_rating": r.get("mode_rating"), "direction": direction,
+            "hit": (alpha * direction) > 0, "judge_mix": r.get("judge_mix"),
+            "evidence_type": "replay",
+            "resolved_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
     return new, skipped
 
@@ -185,6 +310,8 @@ def calibration_footer(main_path, ticker, before):
 def cmd_append(args):
     raw = args.row if args.row else sys.stdin.read()
     row = json.loads(raw)
+    if getattr(args, "replay", False):
+        return cmd_append_replay(row, args)
     missing = [k for k in REQUIRED if k not in row]
     if missing:
         sys.stderr.write(f"ERROR: row missing keys: {', '.join(missing)}\n")
@@ -198,6 +325,41 @@ def cmd_append(args):
     except OSError as e:
         sys.stdout.write("=== MANUAL-APPEND REQUIRED (ledger write failed: "
                          f"{e}) ===\n{line}\n")
+        raise SystemExit(2)
+    sys.stdout.write(f"appended: {row['run_id']}\n")
+    return 0
+
+
+def cmd_append_replay(row, args):
+    """Append to the replay ledger — a mechanically separate file from the live
+    ledger (see replay_path). A duplicate run_id is a no-op success if the new
+    row is identical to the stored one, otherwise a hard reject (never silently
+    overwrite a replay row)."""
+    missing = [k for k in REQUIRED_REPLAY if k not in row]
+    if missing:
+        sys.stderr.write(f"ERROR: replay row missing keys: {', '.join(missing)}\n")
+        raise SystemExit(2)
+    if row.get("evidence_type") != "replay":
+        sys.stderr.write("ERROR: replay row evidence_type must be 'replay' "
+                         f"(got {row.get('evidence_type')!r})\n")
+        raise SystemExit(2)
+    path = replay_path(ledger_path(args.ledger))
+    for existing in read_jsonl(path, "replay-ledger"):
+        if existing.get("run_id") == row.get("run_id"):
+            if existing == row:
+                sys.stdout.write(f"appended: {row['run_id']} (duplicate, no-op)\n")
+                return 0
+            sys.stderr.write(f"ERROR: run_id {row['run_id']} already exists in "
+                             "replay ledger with different content\n")
+            raise SystemExit(2)
+    line = json.dumps(row, ensure_ascii=False)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        sys.stdout.write("=== MANUAL-APPEND REQUIRED (replay ledger write "
+                         f"failed: {e}) ===\n{line}\n")
         raise SystemExit(2)
     sys.stdout.write(f"appended: {row['run_id']}\n")
     return 0
@@ -231,6 +393,8 @@ def cmd_read(args):
 def cmd_resolve(args):
     path = ledger_path(args.ledger)
     asof = _day(args.asof) if args.asof else date.today()
+    if getattr(args, "replay", False):
+        return cmd_resolve_replay(path, args, asof)
     main_rows = read_jsonl(path, "ledger")
     side = sidecar_path(path)
     resolved_ids = {r.get("run_id") for r in read_jsonl(side, "resolved-ledger")}
@@ -248,12 +412,35 @@ def cmd_resolve(args):
     return 0
 
 
+def cmd_resolve_replay(main_path, args, asof):
+    """Resolve loop for the replay ledger: reads replay_path, writes
+    replay_resolved_path, deduped by resolved_key (never touches the live
+    ledger or its sidecar)."""
+    rpath = replay_path(main_path)
+    rows = read_jsonl(rpath, "replay-ledger")
+    side = replay_resolved_path(main_path)
+    resolved_keys = {resolved_key(r) for r in read_jsonl(side, "replay-resolved-ledger")}
+    new, skipped = resolve_replay_rows(rows, resolved_keys, args.ticker, args.horizon,
+                                       args.benchmark, asof, _schwab_close_with_asof)
+    if new:
+        side.parent.mkdir(parents=True, exist_ok=True)
+        with side.open("a") as f:
+            for row in new:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    msg = f"{len(new)} resolved for {args.ticker.upper()} (as_of {asof})"
+    if skipped:
+        msg += f", {skipped} skipped (missing/stale price — will retry)"
+    sys.stdout.write(msg + f"; sidecar {side}\n")
+    return 0
+
+
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--ledger")
     sub = p.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("append")
     a.add_argument("--row")
+    a.add_argument("--replay", action="store_true")
     r = sub.add_parser("read")
     r.add_argument("--ticker", required=True)
     r.add_argument("--before", required=True)
@@ -262,6 +449,7 @@ def main(argv=None):
     rs.add_argument("--horizon", type=int, default=21)
     rs.add_argument("--benchmark", default="SPY")
     rs.add_argument("--asof")
+    rs.add_argument("--replay", action="store_true")
     args = p.parse_args(argv)
     return {"append": cmd_append, "read": cmd_read,
             "resolve": cmd_resolve}[args.cmd](args)
