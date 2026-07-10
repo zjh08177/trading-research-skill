@@ -73,6 +73,51 @@ def _replay_fake_run_cli(calls_out):
     return run_cli
 
 
+def _replay_fake_run_cli_with_p5_gaps(calls_out):
+    """Like _replay_fake_run_cli but marketaux drops a headline, so it returns a
+    P5._gaps list -- the regression case for the render_md crash: build_facts_replay
+    must POP P5._gaps into the Data gaps section, never leave it as a pseudo-fact."""
+    def run_cli(name, args):
+        calls_out.append((name, list(args)))
+        if name == "schwab_bars":
+            return 0, {"P1.price": _rfct(100.0, "USD", "2026-07-01"),
+                       "P2.atr14": _rfct(5.0, "USD", "2026-07-01")}, ""
+        if name == "tiingo_oracle":
+            return 0, {"P1.px_close_oob": _rfct(100.05, "USD", "2026-07-01")}, ""
+        if name == "edgar_fundamentals":
+            return 0, {"P3.shares_outstanding": _rfct(1000000, "shares", "2026-07-01")}, ""
+        if name == "marketaux_news":
+            return 0, {"P5.headlines": {"v": [], "unit": "articles", "asof": "2026-07-01",
+                                        "src": "marketaux"},
+                       "P5._gaps": ["headline excluded (published 2026-07-05 after cutoff "
+                                    "2026-07-01): Reuters late story"]}, ""
+        return 1, None, f"unexpected call in replay branch: {name}"
+    return run_cli
+
+
+def test_replay_p5_gaps_do_not_crash_render_and_surface_in_data_gaps(tmp_path, monkeypatch):
+    # Regression: marketaux -> build_facts_replay -> render_md wiring. A dropped
+    # headline yields P5._gaps (a list); if not popped, render_md treats it as a
+    # fact dict and raises TypeError, aborting the whole replay build.
+    calls = []
+    monkeypatch.setattr(bd, "run_cli", _replay_fake_run_cli_with_p5_gaps(calls))
+    monkeypatch.setattr(bd, "run_ledger", lambda ticker: "No prior track record.")
+    monkeypatch.setattr(bd, "run_usage_start", lambda *a, **k: "inv-test")
+    monkeypatch.setattr(bd, "RUNS", str(tmp_path))
+
+    # Must not raise.
+    bd.main(['[["TSLA", "equity"]]', "--asof", "2026-07-01", "--replay"])
+
+    run_dir = tmp_path / "TSLA-2026-07-01-1300"
+    datapack = json.loads((run_dir / "10-datapack.json").read_text())
+    # P5._gaps must be consumed, not left as a pseudo-fact.
+    assert "P5._gaps" not in datapack
+    # The named gap must surface in the rendered Data gaps section.
+    md = (run_dir / "10-datapack.md").read_text()
+    assert "## Data gaps" in md
+    assert "Reuters late story" in md
+
+
 def test_build_datapack_exposes_replay_flag():
     parser = bd._build_arg_parser()
     on = parser.parse_args(["[]", "--replay"])

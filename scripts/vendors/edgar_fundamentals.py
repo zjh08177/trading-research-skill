@@ -52,7 +52,14 @@ def filed_on_or_before(row, cutoff):
     Both 'filed' and cutoff are ISO YYYY-MM-DD strings, so a plain string
     compare is safe. Without this gate a 10-Q whose period ended before the
     cutoff but was FILED after it would leak into a replay pack.
+
+    In live mode the cutoff is the sentinel "9999-12-31"; the filing-date gate
+    is then a no-op (rows lacking a 'filed' field are kept, preserving the
+    pre-replay live behavior byte-for-byte). The gate only bites under a real
+    replay cutoff.
     """
+    if cutoff == "9999-12-31":
+        return True
     filed = row.get("filed")
     return bool(filed) and filed <= cutoff
 

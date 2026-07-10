@@ -278,6 +278,8 @@ def build_facts_replay(ticker, kind, cutoff):
     ex, d, err = run_cli("marketaux_news",
                           ["--ticker", ticker, "--days", "7", "--asof", cutoff, "--replay"])
     if ex == 0:
+        for g in (d.pop("P5._gaps", None) or []):
+            gaps.append(f"P5 {g}")
         facts.update(d)
         arts = d.get("P5.headlines", {}).get("v", [])
         sents = [a["sentiment"] for a in arts if isinstance(a, dict)
