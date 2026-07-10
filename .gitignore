@@ -13,3 +13,9 @@ reports/
 
 # Skill-owned venv (bootstrap: scripts/setup_venv.sh)
 .venv/
+
+# Rolling resume-pointer handoff (internal working note — never publish in this public repo)
+handoff-*.md
+
+# Local usage telemetry sink (0600, uncommitted — privacy publication boundary)
+.local-usage/
