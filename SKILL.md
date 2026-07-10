@@ -399,3 +399,15 @@ Retry ladder (precedence pinned; each judge's exit code + stderr also append to
 **Invariant 18 (Cursor host; additive to 1–17):** Cursor judges run plan-mode,
 read-only, bundle-only — a vote citing facts absent from the judge bundle is
 malformed.
+
+## Grounding and completion honesty
+
+- **Self-grounding**: Before reporting any status or figure, audit each claim
+  against a tool result from this session; if no tool result backs it, say so
+  instead of asserting it.
+- **Anti-early-stop**: End-of-turn self-check — if the last paragraph promises
+  future work, either do the work now or explicitly hand off; never end on an
+  unfulfilled promise.
+- **Verifier cadence**: For runs longer than a few actions, dispatch a
+  fresh-context verifier subagent to check the work product; independent
+  verification tends to outperform self-critique.
