@@ -11,6 +11,8 @@ import os
 import re
 import sys
 
+import replay
+
 CHECK_SECTIONS = ("rating", "thesis", "risk", "position")
 TAG = r"\[[PH]\d+\.[A-Za-z0-9_]+\]"
 PAIR_RE = re.compile(
@@ -21,6 +23,15 @@ TAG_RE = re.compile(TAG)
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 NUM_RE = re.compile(r"(?<![A-Za-z0-9.])~?\$?-?\d[\d,]*(?:\.\d+)?%?")
 URL_RE = re.compile(r"https?://|www\.")
+REPORT_URL_RE = re.compile(r"https?://[^\s\)\]\>\"']+")
+
+# Phrases that leak live/web-search content into a historical replay report.
+# NOTE: deliberately does NOT match bare "latest" — legitimate datapack tags
+# like [P3.latest_10q_filed] must be allowed through untouched.
+CURRENT_DATA_PHRASES = (
+    "websearch", "(discovery", "current web", "latest catalyst", "latest news",
+    "today's", "today’s",
+)
 
 
 def to_float(s):
@@ -184,36 +195,83 @@ def scan_untagged(text, sections=CHECK_SECTIONS):
     return warnings
 
 
+def scan_replay_report(text, pack):
+    """REPLAY REPORT-TEXT SCAN (--replay only, in addition to
+    replay.check_pack_cutoff): hard-fail on report URLs the datapack cannot
+    account for, and on current-data phrasing that would leak live/web-search
+    content into a historical replay report. Returns list of error strings."""
+    errors = []
+    pack_json = json.dumps(pack, ensure_ascii=False)
+    for m in REPORT_URL_RE.finditer(text):
+        url = m.group().rstrip(".,;:)]}>'\"")
+        if url not in pack_json:
+            errors.append(f"report cites URL not found in datapack: {url}")
+    lowered = text.lower()
+    for phrase in CURRENT_DATA_PHRASES:
+        if phrase in lowered:
+            errors.append(f"report contains current-data phrase: {phrase!r}")
+    return errors
+
+
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
     strict = "--strict" in argv
     argv = [a for a in argv if a != "--strict"]
+    replay_mode = "--replay" in argv
+    argv = [a for a in argv if a != "--replay"]
+    asof_cutoff = None
+    if "--asof-cutoff" in argv:
+        i = argv.index("--asof-cutoff")
+        asof_cutoff = argv[i + 1] if i + 1 < len(argv) else None
+        argv = argv[:i] + argv[i + 2:]
     if len(argv) < 2:
-        sys.stderr.write("usage: qa_check.py <report.md> <datapack.json> [position.json] [--strict]\n")
+        sys.stderr.write(
+            "usage: qa_check.py <report.md> <datapack.json> [position.json] [--strict] "
+            "[--replay --asof-cutoff YYYY-MM-DD]\n")
+        return 2
+    if replay_mode and not asof_cutoff:
+        sys.stderr.write("qa_check.py: --replay requires --asof-cutoff YYYY-MM-DD\n")
         return 2
     with open(argv[0]) as f:
         report = f.read()
     report = report.replace("−", "-")  # typographic minus (−) → ASCII so negatives parse
     with open(argv[1]) as f:
-        pack = json.load(f)
+        datapack = json.load(f)
+    position_pack = None
     if len(argv) >= 3 and argv[2] and os.path.exists(argv[2]):
         with open(argv[2]) as f:
-            pack = {**pack, **json.load(f)}  # position facts (15-position.json): a 2nd tag source
+            position_pack = json.load(f)
+    pack = {**datapack, **position_pack} if position_pack else dict(datapack)
     # An absent position file is normal (flat / back-dated / auth-fail runs write none):
     # skip the merge, never crash — a stray [H#] tag then fails as "no pack entry".
+
+    replay_errors = []
+    if replay_mode:
+        try:
+            r_errors, _r_warnings = replay.check_pack_cutoff(
+                datapack, asof_cutoff, replay=True, position_pack=position_pack)
+        except replay.CutoffError as e:
+            sys.stderr.write(f"qa_check.py: invalid --asof-cutoff: {e}\n")
+            return 2
+        replay_errors += [f"REPLAY {e}" for e in r_errors]
+        replay_errors += [f"REPLAY {e}" for e in scan_replay_report(report, pack)]
+
     results = check_pairs(strip_riskbox(report), pack)
     dresults, dwarnings = recompute_derived(pack)
     results += dresults
     warnings = scan_untagged(report) + dwarnings
-    hard = [msg for ok, msg in results if not ok]
-    if strict:
-        hard += warnings
+    result_fails = [msg for ok, msg in results if not ok]
+    hard_base = result_fails + warnings if strict else result_fails
+    hard = replay_errors + hard_base  # cutoff/replay failures are always hard, independent of --strict
     out = ["== QA CITE CHECK =="]
+    if replay_errors:
+        out.append("== REPLAY GUARD ==")
+        out += ["! " + msg for msg in replay_errors]
     out += [("  " if ok else "! ") + msg for ok, msg in results]
     if warnings:
         out.append("== WARNINGS (non-fatal) ==")
         out += ["  " + w for w in warnings]
-    out.append(f"== {len(results) - len(hard)} pass, {len(hard)} fail, "
+    out.append(f"== {len(results) - len(hard_base)} pass, {len(hard)} fail, "
                f"{len(warnings)} warn ==")
     sys.stdout.write("\n".join(out) + "\n")
     return 1 if hard else 0
