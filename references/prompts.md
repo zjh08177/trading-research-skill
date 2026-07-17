@@ -213,13 +213,19 @@ conditions (mirrored by direction):
     3 consecutive lower closes with no new >=1x ATR up day; (clustered
     regimes only) >=10 sessions with no new same-magnitude melt-up).
 Never price-only — "it went down a lot and ticked up" is exactly the trap
-this blocks. When you cite the base-rate table for a counter-trend trigger,
-the LEVELS_JSON trigger's `base_rate_cite` field MUST carry `n_raw`,
-`n_regimes`, AND `n_macro` together (validate_level_set() rejects a citation
-missing any of the three). When [P9.decay_risk_daily_pct] is present, the
-trigger's `decay_risk` field MUST be populated with that value
-(validate_level_set() rejects a leveraged-product counter-trend trigger with
-no decay_risk).
+this blocks. Any LEVELS_JSON trigger — counter-trend or trend-aligned — that
+cites the base-rate table MUST carry `n_raw`, `n_regimes`, AND `n_macro`
+together in its `base_rate_cite` field (validate_level_set() rejects any
+citation missing any of the three, not only on counter-trend triggers). When
+the pack carries [P0.leverage_objective] (a leveraged product), every
+counter-trend trigger's `decay_risk` field MUST be populated with the
+[P9.decay_risk_daily_pct] value (validate_level_set() rejects a
+leveraged-product counter-trend trigger with no decay_risk). Note: a
+leveraged pack missing [P2.sigma30] will still have [P0.leverage_objective]
+but never emits [P9.decay_risk_daily_pct] (stretch.py only computes it when
+sigma30 is present) — that data gap will hard-fail QA on any counter-trend
+trigger for this product, so fill the sigma30 gap upstream rather than
+leaving decay_risk unpopulated.
 At the very end of the "## Risk box" section (below the verbatim block + narration),
 emit ONE machine-readable fenced block (parsed into 56-levels.json; powers the rail,
 monitor, and action plan). `action_strength` is `review` unless the rating and all
@@ -256,7 +262,7 @@ triggers are always `review`.
         "level": <price>,
         "intended_action": "Buy",
         "basis": "capitulation entry — see Mean-Reversion analysis",
-        "comparison": "close_above",
+        "comparison": "close_below",
         "action_strength": "review",
         "rating_gate": "hold_requires_review",
         "conditions": [
