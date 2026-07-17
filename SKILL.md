@@ -31,7 +31,8 @@ artifacts are the only channel between stages.
 | 1b Position | orchestrator via `scripts/vendors/snaptrade_account.py` (cross-broker; `schwab_account.py` fallback); current-day only | session | live tool | `15-position.md` + `.json` (WITHHELD from stages 2–5) |
 | 1c Left-side signals (computed) | orchestrator via `scripts/vendors/tiingo_history.py` + `scripts/{stretch,percentile,volume_climax,move_cluster,move_base_rate}.py` | — | `10-datapack.json` + full price history | P9.* facts merged into `10-datapack.json`/`.md`; raw history at `11-history.json` |
 | 2 Analysts ×4 | Agent tool, parallel | sonnet | full pack verbatim | `20-analyst-{fund,tech,sent,meanrev}.md` |
-| 3 Debate | bull + bear agents, parallel, 2 waves | sonnet | pack + analyst briefs | `30-debate.md` |
+| 3a Bull | Agent tool | sonnet | pack + analyst briefs | `30-debate.md` (Bull case section) |
+| 3b Bear | Agent tool, runs AFTER 3a completes | sonnet | pack + analyst briefs + 3a's bull section | `30-debate.md` (Bear case section, appended) |
 | 4a Risk box (computed) | `scripts/risk_box.py` | — | `10-datapack.json` | `40-riskbox-block.md` (inserted into report VERBATIM) |
 | 4b Risk narrative | risk-officer agent | sonnet | pack + debate + `40-riskbox-block.md` | `40-risk.md` (leads with the verbatim block, then narration) |
 | 5 Ensemble | N judge agents, parallel, byte-identical inputs | opus | pack + briefs + debate + `40-risk.md` (leads with the verbatim risk box) + guarded track record | `50-votes/vote-{1..N}.md` |
@@ -147,7 +148,7 @@ call.
 | # | Rule | Enforced by |
 |---|---|---|
 | 1 | No judgment single-samples: headline rating comes only from `ensemble.py` over N≥3 votes. | script emits `55-rating-block.md`; writer inserts verbatim; alteration = QA defect |
-| 2 | Judges receive byte-identical inputs; orchestrator never summarizes, paraphrases, or "repairs" any agent output. | SKILL.md invariant + artifacts are the only inter-stage channel |
+| 2 | Judges receive byte-identical inputs; orchestrator never summarizes, paraphrases, or "repairs" any agent output. The bear advocate runs AFTER the bull (3a → 3b, not parallel) and reads the bull's actual output — any bull claim the bear quotes or characterizes must be faithful to that text, never a fabricated strawman. | SKILL.md invariant + artifacts are the only inter-stage channel; `qa_check.py --debate 30-debate.md` hard-fails a quote attributed to the bull that doesn't appear in the Bull case section |
 | 3 | Ledger is read/written only through `ledger.py`; reads filter `date_utc < as_of` (two-sided guard). | script is sole entry point; the `~/.tradingagents/memory/` path is BANNED |
 | 4 | Numbers in the report carry `[P#.fact]` tags or a URL; untagged numbers fail QA. | `qa_check.py` vs `datapack.json` |
 | 5 | Dead data source → named `MISSING(reason)` section + Data Gaps box; dead P1 → abstain report + `no_call` ledger row. Never silent. | pack contract + failure map |
@@ -225,7 +226,7 @@ positions only, no order path (invariant 13).
 source, never both — SnapTrade already aggregates Schwab if the owner linked it, so
 summing would double-count. The fact `src` stamp records which source ran.
 
-When Stage 1b wrote the artifact, pass it to QA as `qa_check.py 60-report.md 10-datapack.json 15-position.json`; otherwise (back-dated/auth-fail runs write none) use the 2-arg form. `qa_check.py` tolerates an absent position path either way.
+When Stage 1b wrote the artifact, pass it to QA as `qa_check.py 60-report.md 10-datapack.json 15-position.json`; otherwise (back-dated/auth-fail runs write none) use the 2-arg form. `qa_check.py` tolerates an absent position path either way. Always append `--debate 30-debate.md` — this checks the bear's bull-attributed quotes against the actual `## Bull case` section (invariant 1, see below); a fabricated strawman quote is a hard QA failure independent of `--strict`.
 
 ## Ledger
 

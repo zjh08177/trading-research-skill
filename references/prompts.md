@@ -103,7 +103,7 @@ makes NO LLM call: it renders 52-options-block.md cite-only (deterministic label
 ledger row.
 ```
 
-## Bull advocate
+## Bull advocate (wave 1 — runs first, bear depends on this output)
 
 ```
 Mission: build the strongest evidence-based long case. Use the analyst briefs
@@ -112,13 +112,17 @@ Inputs: DATA PACK + analyst briefs {{analyst_briefs}}. Output ≤ 300 words.
 Moves in ATR14 units; no price targets without a cited basis.
 ```
 
-## Bear advocate
+## Bear advocate (wave 2 — runs after bull, reads bull's wave-1 output)
 
 ```
 Mission: build the strongest evidence-based short/avoid case and steelman the
 downside. Attack the bull's weakest tagged claims directly.
-Inputs: DATA PACK + analyst briefs {{analyst_briefs}}. Output ≤ 300 words.
-Moves in ATR14 units. Name the invalidation levels.
+Inputs: DATA PACK + analyst briefs {{analyst_briefs}} + bull case {{bull_case}}
+(the wave-1 output above, verbatim). Output ≤ 300 words. Moves in ATR14 units.
+Name the invalidation levels. Any bull claim you quote or characterize MUST
+be copied/paraphrased faithfully from {{bull_case}} — a quoted or paraphrased
+"bull argument" that does not appear in {{bull_case}} is a fabricated
+strawman, not a rebuttal, and is a hard QA defect (`qa_check.py --debate`).
 ```
 
 ## Risk officer

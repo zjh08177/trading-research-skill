@@ -5,7 +5,10 @@ sections. Stdlib only. Usage: qa_check.py <report.md> <datapack.json>.
 Exit 0 clean, 1 on any tagged mismatch; warnings never fail. Tolerance 0.5%
 relative, relaxed to 5% for a leading ~ (approximate).
 Usage: qa_check.py <report.md> <datapack.json> [position.json]. The optional
-position file (15-position.json) is a second tag source for [H#.fact] tags."""
+position file (15-position.json) is a second tag source for [H#.fact] tags.
+--debate <30-debate.md> additionally checks that any bull-attributed quote
+in the Bear case section actually appears in the Bull case section (fabricated
+strawman detector, always hard-fail, independent of --strict)."""
 import json
 import os
 import re
@@ -78,6 +81,44 @@ def check_pairs(text, pack):
         else:
             results.append((False, f"FAIL {fact_id}: report {num}{'%' if has_pct else ''} "
                                    f"vs pack {v} (rel {rel:.2%} > {tol:.1%})"))
+    return results
+
+
+BULL_SECTION_RE = re.compile(r"##\s*Bull case\b(.*?)(?=\n##\s|\Z)", re.S | re.I)
+BEAR_SECTION_RE = re.compile(r"##\s*Bear case\b(.*?)(?=\n##\s|\Z)", re.S | re.I)
+QUOTE_RE = re.compile(r'["“]([^"“”]{8,200})["”]')
+BULL_CUE_RE = re.compile(r"\bbull'?s?\b", re.I)
+
+
+def _norm(s):
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def check_debate_fidelity(debate_text):
+    """Invariant-1 fix: any quoted/attributed "bull" claim inside the Bear
+    case section must appear verbatim inside the Bull case section — a
+    quote near a bull-attribution cue that the bull never made is a
+    fabricated strawman, not a rebuttal. Returns list of (ok, message);
+    empty if the text has no Bull/Bear case sections (nothing to check)."""
+    bull_m = BULL_SECTION_RE.search(debate_text)
+    bear_m = BEAR_SECTION_RE.search(debate_text)
+    if not bull_m or not bear_m:
+        return []
+    bull_norm = _norm(bull_m.group(1))
+    results = []
+    for m in QUOTE_RE.finditer(bear_m.group(1)):
+        quote = m.group(1)
+        window_start = max(0, m.start() - 100)
+        cue_window = bear_m.group(1)[window_start:m.start()]
+        if not BULL_CUE_RE.search(cue_window):
+            continue  # quoted text not attributed to the bull — not this rule's concern
+        if _norm(quote) in bull_norm:
+            results.append((True, f"PASS bull-quote-fidelity: bear quote {quote!r} "
+                                   f"found verbatim in bull case"))
+        else:
+            results.append((False, f"FAIL bull-quote-fidelity: bear attributes "
+                                   f"{quote!r} to the bull but it does not appear "
+                                   f"in the Bull case section — fabricated strawman"))
     return results
 
 
@@ -229,10 +270,15 @@ def main(argv=None):
         i = argv.index("--asof-cutoff")
         asof_cutoff = argv[i + 1] if i + 1 < len(argv) else None
         argv = argv[:i] + argv[i + 2:]
+    debate_path = None
+    if "--debate" in argv:
+        i = argv.index("--debate")
+        debate_path = argv[i + 1] if i + 1 < len(argv) else None
+        argv = argv[:i] + argv[i + 2:]
     if len(argv) < 2:
         sys.stderr.write(
             "usage: qa_check.py <report.md> <datapack.json> [position.json] [--strict] "
-            "[--replay --asof-cutoff YYYY-MM-DD]\n")
+            "[--replay --asof-cutoff YYYY-MM-DD] [--debate 30-debate.md]\n")
         return 2
     if replay_mode and not asof_cutoff:
         sys.stderr.write("qa_check.py: --replay requires --asof-cutoff YYYY-MM-DD\n")
@@ -270,14 +316,20 @@ def main(argv=None):
         replay_errors += [f"REPLAY {e}" for e in r_errors]
         replay_errors += [f"REPLAY {e}" for e in scan_replay_report(report, pack)]
 
+    debate_errors = []
+    if debate_path and os.path.exists(debate_path):
+        with open(debate_path) as f:
+            debate_results = check_debate_fidelity(f.read())
+        debate_errors = [msg for ok, msg in debate_results if not ok]
+
     results = check_pairs(strip_riskbox(report), pack)
     dresults, dwarnings = recompute_derived(pack)
     results += dresults
     warnings = scan_untagged(report) + dwarnings
     result_fails = [msg for ok, msg in results if not ok]
     hard_base = result_fails + warnings if strict else result_fails
-    hard = replay_errors + invariant19_errors + hard_base  # cutoff/replay/invariant-19 failures
-    # are always hard, independent of --strict
+    hard = replay_errors + invariant19_errors + debate_errors + hard_base  # cutoff/replay/
+    # invariant-19/debate-fidelity failures are always hard, independent of --strict
     out = ["== QA CITE CHECK =="]
     if replay_errors:
         out.append("== REPLAY GUARD ==")
@@ -285,6 +337,9 @@ def main(argv=None):
     if invariant19_errors:
         out.append("== INVARIANT 19 (counter-trend triggers) ==")
         out += ["! " + msg for msg in invariant19_errors]
+    if debate_errors:
+        out.append("== DEBATE FIDELITY (bear quoting bull) ==")
+        out += ["! " + msg for msg in debate_errors]
     out += [("  " if ok else "! ") + msg for ok, msg in results]
     if warnings:
         out.append("== WARNINGS (non-fatal) ==")

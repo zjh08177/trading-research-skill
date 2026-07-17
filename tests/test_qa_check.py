@@ -92,3 +92,62 @@ def test_invariant_19_hard_fail_independent_of_strict(tmp_path):
     pack.write_text("{}")
     code = qa.main([str(report), str(pack), "--strict"])
     assert code == 1
+
+
+FABRICATED_DEBATE = """## Bull case
+
+The primary bull argument is trend context: price sits above SMA200.
+
+## Bear case
+
+Attack the bull's best argument — "oversold bounce is imminent, buy the dip":
+the numbers refute the climax framing.
+"""
+
+FAITHFUL_DEBATE = """## Bull case
+
+The primary bull argument is "trend context is intact" and price sits above
+SMA200.
+
+## Bear case
+
+Attack the bull's best argument — "trend context is intact": the numbers
+refute the climax framing regardless of trend.
+"""
+
+
+def test_debate_fidelity_catches_fabricated_bull_quote():
+    results = qa.check_debate_fidelity(FABRICATED_DEBATE)
+    assert results and results[0][0] is False
+    assert "oversold bounce is imminent" in results[0][1]
+
+
+def test_debate_fidelity_passes_faithful_quote():
+    results = qa.check_debate_fidelity(FAITHFUL_DEBATE)
+    assert results and all(ok for ok, _ in results)
+
+
+def test_debate_fidelity_noop_without_sections():
+    assert qa.check_debate_fidelity("no headings here") == []
+
+
+def test_main_hard_fails_on_fabricated_debate_quote(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text("# T\n")
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    debate = tmp_path / "30-debate.md"
+    debate.write_text(FABRICATED_DEBATE)
+    code = qa.main([str(report), str(pack), "--debate", str(debate)])
+    assert code == 1
+
+
+def test_main_passes_with_faithful_debate_quote(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text("# T\n")
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    debate = tmp_path / "30-debate.md"
+    debate.write_text(FAITHFUL_DEBATE)
+    code = qa.main([str(report), str(pack), "--debate", str(debate)])
+    assert code == 0
