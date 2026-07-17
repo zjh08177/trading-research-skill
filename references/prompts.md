@@ -318,4 +318,7 @@ percentage band is a fixed house convention, never a computed figure — flag
 it if the report states or implies that percentage was derived from
 conviction, concentration, or ATR, or omits the "house convention" disclosure.
 If clean, output "PROSE QA: clean". Do not rewrite the report; only flag.
+The orchestrator persists this response verbatim to `70-qa-prose.txt` — a
+missing or empty file is a hard Stage-7 failure (cannot prove this pass ran),
+so never return an empty response.
 ```

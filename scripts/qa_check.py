@@ -12,7 +12,10 @@ strawman detector, always hard-fail, independent of --strict).
 --brief <path> (repeatable) additionally scans an analyst-brief-style artifact
 for a DATA GAP / MISSING / "not available" claim naming a [P#.fact] tag that
 is actually present (non-null) in the pack — a hallucinated gap, always
-hard-fail, independent of --strict."""
+hard-fail, independent of --strict.
+--prose-qa <70-qa-prose.txt> requires the file to exist and be non-blank —
+proves the sonnet prose-QA pass actually ran and persisted its output;
+missing/empty is always a hard fail, independent of --strict."""
 import json
 import os
 import re
@@ -316,11 +319,16 @@ def main(argv=None):
         if i + 1 < len(argv):
             brief_paths.append(argv[i + 1])
         argv = argv[:i] + argv[i + 2:]
+    prose_qa_path = None
+    if "--prose-qa" in argv:
+        i = argv.index("--prose-qa")
+        prose_qa_path = argv[i + 1] if i + 1 < len(argv) else None
+        argv = argv[:i] + argv[i + 2:]
     if len(argv) < 2:
         sys.stderr.write(
             "usage: qa_check.py <report.md> <datapack.json> [position.json] [--strict] "
             "[--replay --asof-cutoff YYYY-MM-DD] [--debate 30-debate.md] "
-            "[--brief path ...]\n")
+            "[--brief path ...] [--prose-qa 70-qa-prose.txt]\n")
         return 2
     if replay_mode and not asof_cutoff:
         sys.stderr.write("qa_check.py: --replay requires --asof-cutoff YYYY-MM-DD\n")
@@ -374,15 +382,25 @@ def main(argv=None):
                         for ok, msg in check_data_gap_hallucination(brief_text, pack) if not ok]
     gap_errors += [msg for ok, msg in check_data_gap_hallucination(report, pack) if not ok]
 
+    prose_qa_errors = []
+    if prose_qa_path is not None:
+        if not os.path.exists(prose_qa_path):
+            prose_qa_errors.append(f"prose-QA artifact missing: {prose_qa_path} "
+                                   f"(Stage 7 sonnet prose pass cannot be proven to have run)")
+        elif not open(prose_qa_path).read().strip():
+            prose_qa_errors.append(f"prose-QA artifact empty: {prose_qa_path} "
+                                   f"(a clean pass still writes 'PROSE QA: clean')")
+
     results = check_pairs(strip_riskbox(report), pack)
     dresults, dwarnings = recompute_derived(pack)
     results += dresults
     warnings = scan_untagged(report) + dwarnings
     result_fails = [msg for ok, msg in results if not ok]
     hard_base = result_fails + warnings if strict else result_fails
-    hard = replay_errors + invariant19_errors + debate_errors + gap_errors + hard_base
-    # cutoff/replay/invariant-19/debate-fidelity/gap-hallucination failures are
-    # always hard, independent of --strict
+    hard = (replay_errors + invariant19_errors + debate_errors + gap_errors
+            + prose_qa_errors + hard_base)
+    # cutoff/replay/invariant-19/debate-fidelity/gap-hallucination/prose-qa
+    # failures are always hard, independent of --strict
     out = ["== QA CITE CHECK =="]
     if replay_errors:
         out.append("== REPLAY GUARD ==")
@@ -390,6 +408,9 @@ def main(argv=None):
     if invariant19_errors:
         out.append("== INVARIANT 19 (counter-trend triggers) ==")
         out += ["! " + msg for msg in invariant19_errors]
+    if prose_qa_errors:
+        out.append("== PROSE QA ARTIFACT ==")
+        out += ["! " + msg for msg in prose_qa_errors]
     if debate_errors:
         out.append("== DEBATE FIDELITY (bear quoting bull) ==")
         out += ["! " + msg for msg in debate_errors]

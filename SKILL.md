@@ -39,7 +39,7 @@ artifacts are the only channel between stages.
 | 5b Tally | `scripts/ensemble.py` | — | votes | `55-rating-block.md` (inserted into report VERBATIM) |
 | 6b Mean-reversion block render | `scripts/render_meanrev.py` | — | `10-datapack.json` | `53-meanrev-block.md` (inserted into report VERBATIM) |
 | 6 Report | writer agent | opus | all artifacts + template + `15-position.json` | `60-report.md` |
-| 7 QA | `scripts/qa_check.py` + 1 sonnet prose pass | sonnet | report + `10-datapack.json` + `15-position.json` | `70-qa.txt` |
+| 7 QA | `scripts/qa_check.py` + 1 sonnet prose pass | sonnet | report + `10-datapack.json` + `15-position.json` | `70-qa.txt` + `70-qa-prose.txt` |
 | 7b Render | `scripts/render_report.py` | — | `60-report.md` | `60-report.html` (self-contained styled page) |
 | 8 Publish + ledger | orchestrator + `scripts/ledger.py` + Artifact | — | report | HTML Artifact + vault copy (`.md`+`.html`) + ledger row |
 
@@ -227,6 +227,15 @@ source, never both — SnapTrade already aggregates Schwab if the owner linked i
 summing would double-count. The fact `src` stamp records which source ran.
 
 When Stage 1b wrote the artifact, pass it to QA as `qa_check.py 60-report.md 10-datapack.json 15-position.json`; otherwise (back-dated/auth-fail runs write none) use the 2-arg form. `qa_check.py` tolerates an absent position path either way. Always append `--debate 30-debate.md` — this checks the bear's bull-attributed quotes against the actual `## Bull case` section (invariant 1, see below); a fabricated strawman quote is a hard QA failure independent of `--strict`. Always append `--brief 20-analyst-<name>.md` once per analyst artifact present — this catches a "DATA GAP"/MISSING claim naming a `[P#.fact]` the pack actually has a value for (a hallucination, hard-fail independent of `--strict`).
+
+The prose-QA pass's raw response is the artifact — write it VERBATIM to
+`70-qa-prose.txt` before proceeding to Stage 7b. Always append
+`--prose-qa 70-qa-prose.txt` to the `qa_check.py` invocation — a missing or
+empty file is a hard Stage-7 failure (the pass cannot be proven to have run
+at all), same fail-closed posture as `qa_check.py`'s own exit code; stop
+and re-run the prose pass rather than proceeding to 7b/8 without it. A
+clean pass still writes the file — its content is the literal string
+"PROSE QA: clean", never an empty file.
 
 ## Ledger
 

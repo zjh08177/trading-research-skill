@@ -197,3 +197,35 @@ def test_main_hard_fails_on_brief_gap_hallucination(tmp_path):
     brief.write_text("DATA GAP: ATR14 [P2.atr14] not present in pack.")
     code = qa.main([str(report), str(pack), "--brief", str(brief)])
     assert code == 1
+
+
+def test_main_hard_fails_on_missing_prose_qa_artifact(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text("# T\n")
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    missing = tmp_path / "70-qa-prose.txt"  # never written
+    code = qa.main([str(report), str(pack), "--prose-qa", str(missing)])
+    assert code == 1
+
+
+def test_main_hard_fails_on_empty_prose_qa_artifact(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text("# T\n")
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    prose = tmp_path / "70-qa-prose.txt"
+    prose.write_text("   \n")  # whitespace-only counts as empty
+    code = qa.main([str(report), str(pack), "--prose-qa", str(prose)])
+    assert code == 1
+
+
+def test_main_passes_with_clean_prose_qa_artifact(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text("# T\n")
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    prose = tmp_path / "70-qa-prose.txt"
+    prose.write_text("PROSE QA: clean")
+    code = qa.main([str(report), str(pack), "--prose-qa", str(prose)])
+    assert code == 0
