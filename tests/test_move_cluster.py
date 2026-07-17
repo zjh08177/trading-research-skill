@@ -51,6 +51,27 @@ def test_clustered_when_recent_crashes_nearby(tmp_path, capsys):
     assert out["P9.cluster_k"]["v"] >= 2
 
 
+def test_today_not_naturally_included_uses_fallback(tmp_path, capsys):
+    """The pack's P1.chg_pct_1d (-13.94%) is deliberately a bit more extreme
+    than what the history series' own last-day arithmetic produces (-13.5%,
+    via crash_pct=-13.5) -- a realistic pack-vs-history mismatch (live/settled
+    quote vs. bar-to-bar close). abs(-13.5) < threshold (13.94), and no other
+    day in the drifting history is a "down" move at all, so
+    comparable_event_indices returns no matches whatsoever -- event_dates
+    would be [] without the "today is always its own event" fallback.
+    cluster_events([]) returns [], and `next(c for c in clusters if
+    dates[-1] in c)` would then raise StopIteration: deleting the fallback
+    line doesn't just misclassify today, it crashes the script outright.
+    With the fallback, today is force-included as its own singleton event."""
+    hist = _history_with_crashes(200, {199}, crash_pct=-13.5)
+    code = _run(tmp_path, _pack(chg=-13.94), hist)
+    out = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert out["P9.cluster_status"]["v"] == "isolated"
+    assert out["P9.cluster_k"]["v"] == 1
+    assert out["P9.cluster_events_n"]["v"] == 1
+
+
 def test_missing_required_fact_exit_3(tmp_path, capsys):
     p = tmp_path / "10-datapack.json"
     h = tmp_path / "11-history.json"
