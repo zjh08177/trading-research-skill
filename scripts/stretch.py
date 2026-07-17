@@ -31,7 +31,9 @@ def _fact(v, unit, asof):
 
 
 def build(pack, leverage=1):
-    price = fval(pack, "P1.price") or fval(pack, "P1.last")
+    price = fval(pack, "P1.price")
+    if price is None:
+        price = fval(pack, "P1.last")
     missing = [f for f in REQUIRED if f != "P1.price" and fval(pack, f) is None]
     if price is None:
         missing.append("P1.price|P1.last")
@@ -44,10 +46,15 @@ def build(pack, leverage=1):
                            fval(pack, "P2.sigma30"))
     chg = fval(pack, "P1.chg_pct_1d")
 
+    # atr==0 is a legitimate present-but-zero value (it passes the "is None"
+    # required-fact check above) — guard each ATR-normalized stretch fact the
+    # same way this file already guards move_atr against atr_pct==0 below
+    # (and the way risk_box.py guards its own move_atr against atr_pct==0):
+    # emit None ("cannot normalize") instead of raising ZeroDivisionError.
     facts = {
-        "P9.stretch_sma20_atr": _fact((price - sma20) / atr, "ATRs", asof),
-        "P9.stretch_sma50_atr": _fact((price - sma50) / atr, "ATRs", asof),
-        "P9.stretch_sma200_atr": _fact((price - sma200) / atr, "ATRs", asof),
+        "P9.stretch_sma20_atr": _fact((price - sma20) / atr if atr else None, "ATRs", asof),
+        "P9.stretch_sma50_atr": _fact((price - sma50) / atr if atr else None, "ATRs", asof),
+        "P9.stretch_sma200_atr": _fact((price - sma200) / atr if atr else None, "ATRs", asof),
         "P9.stretch_sma50_sigma": _fact(
             ((price - sma50) / sma50 * 100) / sigma if sigma else None,
             "sigma30_multiples", asof),
@@ -59,7 +66,7 @@ def build(pack, leverage=1):
     facts["P9.climax_direction"] = _fact(
         ("down" if move_atr < 0 else "up") if climax else None, "label", asof)
 
-    if leverage and leverage > 1 and sigma:
+    if leverage and leverage > 1 and sigma is not None:
         sigma_underlying = sigma / leverage / 100
         drag_pct = (leverage ** 2 - leverage) / 2 * sigma_underlying ** 2 * 100
         facts["P9.decay_risk_daily_pct"] = _fact(round(drag_pct, 4), "pct/day", asof)
