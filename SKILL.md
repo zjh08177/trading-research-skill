@@ -175,6 +175,33 @@ paraphrase, re-order, or "clean up" an agent's output — route it as-is through
 the run-folder artifact. When a stage produces nothing, record the gap; never
 invent its content.
 
+## Debate structure: 2 waves by design, not a gap (reviewed 2026-07-17)
+
+The bull writes once, blind; the bear writes once, with full visibility into
+the bull's case and an offensive mandate; the bull never gets a rebuttal.
+This is asymmetric by design — evaluated (advisor review, 2026-07-17) and
+kept at 2 waves rather than adding a bull-rebuttal 3rd wave, because there is
+no measured evidence of order-bias in this pipeline's ratings and the
+mitigation is cheaper done at the judge layer (judge card's DEBATE FORMAT
+NOTE: judges are told the asymmetry is structural, not evidence of
+concession, and must check whether a persuasive bear attack targets a claim
+the bull already tagged/falsified vs. one it left untagged).
+
+**Escalate to a bounded 3rd wave (bull-rebuttal-only, terminates by rule —
+the moving party gets one reply, the responding party gets none, never a
+4th wave) only if:**
+- a swap-order test (re-judge ~10-20 archived byte-identical bundles with
+  bull/bear order swapped, or with the bull's tagged levels restated after
+  the bear section) shows mean rating shift ≥1 notch or conviction shift
+  ≥1.5 points attributable to order, OR
+- judges are observed citing bear rebuttals as dispositive while ignoring
+  that the bull's tagged levels already addressed them (i.e., the judge
+  card's format-note instruction is demonstrably not being followed).
+
+If the track record ledger later shows systematic bearish miscalibration
+that the swap test can't explain by order, that points at the bear's
+offensive mandate or judge priors — a different investigation, not this one.
+
 ## Data pack
 
 Fetch the pack first (Stage 1) and inject it verbatim into every downstream
