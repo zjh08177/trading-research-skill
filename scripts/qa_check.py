@@ -16,10 +16,15 @@ hard-fail, independent of --strict.
 --prose-qa <70-qa-prose.txt> requires the file to exist and be non-blank —
 proves the sonnet prose-QA pass actually ran and persisted its output;
 missing/empty is always a hard fail, independent of --strict.
-Always (no flag needed): a report's Disclosure section may never contain a
-leftover {{token}} placeholder or a bare "not recorded" — invariant 7's
-agent count/model mix/wall clock/token cost come from run_stats.py, never
-hand-guessed; always a hard fail, independent of --strict."""
+--check-footer additionally hard-fails a leftover {{token}} placeholder or a
+bare "not recorded" in the Disclosure section (invariant 7 — agent count/
+model mix/wall clock/token cost come from run_stats.py, never hand-guessed).
+NOT on by default: the writer intentionally leaves these 4 tokens unfilled
+until Stage 7c (run_stats.py --patch) runs, which itself only runs after a
+first qa_check.py pass succeeds — omit --check-footer on that first pass
+(the tokens are correctly still unfilled at that point) and pass it on the
+second, post-patch verification pass, or every run would hard-fail forever
+on its own intentional pending state."""
 import json
 import os
 import re
@@ -357,11 +362,13 @@ def main(argv=None):
         i = argv.index("--prose-qa")
         prose_qa_path = argv[i + 1] if i + 1 < len(argv) else None
         argv = argv[:i] + argv[i + 2:]
+    check_footer = "--check-footer" in argv
+    argv = [a for a in argv if a != "--check-footer"]
     if len(argv) < 2:
         sys.stderr.write(
             "usage: qa_check.py <report.md> <datapack.json> [position.json] [--strict] "
             "[--replay --asof-cutoff YYYY-MM-DD] [--debate 30-debate.md] "
-            "[--brief path ...] [--prose-qa 70-qa-prose.txt]\n")
+            "[--brief path ...] [--prose-qa 70-qa-prose.txt] [--check-footer]\n")
         return 2
     if replay_mode and not asof_cutoff:
         sys.stderr.write("qa_check.py: --replay requires --asof-cutoff YYYY-MM-DD\n")
@@ -424,7 +431,8 @@ def main(argv=None):
             prose_qa_errors.append(f"prose-QA artifact empty: {prose_qa_path} "
                                    f"(a clean pass still writes 'PROSE QA: clean')")
 
-    footer_errors = [msg for ok, msg in check_disclosure_footer(report) if not ok]
+    footer_errors = ([msg for ok, msg in check_disclosure_footer(report) if not ok]
+                     if check_footer else [])
 
     results = check_pairs(strip_riskbox(report), pack)
     dresults, dwarnings = recompute_derived(pack)

@@ -154,7 +154,7 @@ call.
 | 4 | Numbers in the report carry `[P#.fact]` tags or a URL; untagged numbers fail QA. | `qa_check.py` vs `datapack.json` |
 | 5 | Dead data source → named `MISSING(reason)` section + Data Gaps box; dead P1 → abstain report + `no_call` ledger row. Never silent. A DATA GAP/MISSING claim naming a fact the pack actually has a value for is a hallucination, not a legitimate gap. | pack contract + failure map; `qa_check.py --brief`/report scan hard-fails a hallucinated gap |
 | 6 | Move/level language states ATR14 multiples before any escalation word. | prompts.md role cards + QA prose pass |
-| 7 | Footer discloses: actual N, agent count, model mix, wall clock, token cost. Thin ensemble (<3 valid votes) is never presented as N≥3. | `scripts/run_stats.py --patch` (Stage 7c) computes and fills all 4 non-N fields mechanically from the artifacts actually present — the writer leaves them as literal unfilled tokens, never hand-counts; `qa_check.py` hard-fails an unfilled `{{...}}` token or a bare "not recorded" left in the Disclosure section |
+| 7 | Footer discloses: actual N, agent count, model mix, wall clock, token cost. Thin ensemble (<3 valid votes) is never presented as N≥3. | `scripts/run_stats.py --patch` (Stage 7c) computes and fills all 4 non-N fields mechanically from the artifacts actually present — the writer leaves them as literal unfilled tokens, never hand-counts; the post-patch `qa_check.py --check-footer` pass hard-fails an unfilled `{{...}}` token or a bare "not recorded" left in the Disclosure section |
 | 8 | Escalation (spread ≥2 at N=3 → N=5) always runs; R7 overrun is disclosed, never skipped. | `ensemble.py` decision output |
 | 9 | Spread ≥3 at N=5 → headline `NO-CALL`, distribution still published + ledger-logged. | `ensemble.py` |
 | 10 | P1–P5 fill from the named vendor CLIs; every fallback-filled fact stamps its real `src` and the section is boxed `DEGRADED(P#, reason)` in Data Gaps. P1 carries a tiingo cross-check stamp: same-asof-date closes within 0.5% → CROSS-CHECK OK, else CROSS-CHECK FAIL named in Data Gaps (run continues). This settled-close check stays 2-source (schwab + tiingo) — Finnhub's `/quote` has no as-of param, so it can only vote on the LIVE cross-check (invariant 11), not a settled historical close. | CLIs exit nonzero and never fabricate; orchestrator stamps src + gaps |
@@ -244,13 +244,21 @@ and re-run the prose pass rather than proceeding to 7b/8 without it. A
 clean pass still writes the file — its content is the literal string
 "PROSE QA: clean", never an empty file.
 
-**Stage 7c** (only after `qa_check.py` exits 0 AND the prose pass is clean):
-run `scripts/run_stats.py <run_dir> --patch 60-report.md` — this fills the
-Disclosure section's `{{agent_count}}`/`{{model_mix}}`/`{{wall_s}}`/
-`{{cost_usd}}` tokens in place from the artifacts that now all exist. Then
-re-run `qa_check.py` once more (same flags) to confirm the patched report
-still passes — the patch only replaces literal placeholder tokens, never
-touches tagged numbers, so this should be a no-op pass, not a new failure.
+This first `qa_check.py` pass does NOT include `--check-footer` — the
+Disclosure section's 4 tokens are correctly still unfilled at this point
+(Stage 7c hasn't run yet), and `--check-footer` would hard-fail the
+pipeline's own intentional pending state, making Stage 7c — gated on this
+pass succeeding — impossible to ever reach.
+
+**Stage 7c** (only after this first `qa_check.py` exits 0 AND the prose
+pass is clean): run `scripts/run_stats.py <run_dir> --patch 60-report.md` —
+this fills the Disclosure section's `{{agent_count}}`/`{{model_mix}}`/
+`{{wall_s}}`/`{{cost_usd}}` tokens in place from the artifacts that now all
+exist. Then re-run `qa_check.py` once more, same flags PLUS
+`--check-footer`, to confirm the patched report both still passes
+everything else and now has a fully populated footer — the patch only
+replaces literal placeholder tokens, never touches tagged numbers, so this
+should be a clean pass, not a new failure.
 
 ## Ledger
 

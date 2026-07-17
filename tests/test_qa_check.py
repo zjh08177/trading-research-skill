@@ -257,10 +257,35 @@ def test_disclosure_footer_noop_without_section():
     assert qa.check_disclosure_footer("no disclosure heading here") == []
 
 
-def test_main_hard_fails_on_unfilled_disclosure_footer(tmp_path):
+def test_main_hard_fails_on_unfilled_disclosure_footer_with_check_footer(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text("## Disclosure\n\nAgents: {{agent_count}}.\n")
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    code = qa.main([str(report), str(pack), "--check-footer"])
+    assert code == 1
+
+
+def test_main_ignores_unfilled_disclosure_footer_without_check_footer_flag(tmp_path):
+    # the writer intentionally leaves these tokens unfilled until Stage 7c
+    # patches them; the FIRST qa_check.py pass (pre-Stage-7c) must not fail
+    # on the pipeline's own intentional pending state, or Stage 7c (gated on
+    # that first pass succeeding) could never run.
     report = tmp_path / "60-report.md"
     report.write_text("## Disclosure\n\nAgents: {{agent_count}}.\n")
     pack = tmp_path / "10-datapack.json"
     pack.write_text("{}")
     code = qa.main([str(report), str(pack)])
-    assert code == 1
+    assert code == 0
+
+
+def test_main_passes_check_footer_after_patch(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text(
+        "## Disclosure\n\nActual N: 3 valid votes · Agents: 12 · "
+        "Models: 3x opus (judges) + 1x opus (writer) + sonnet (rest) · "
+        "Wall clock: 2766.5s · Token cost: ~$0.36 (estimated).\n")
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    code = qa.main([str(report), str(pack), "--check-footer"])
+    assert code == 0
