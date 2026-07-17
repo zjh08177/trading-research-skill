@@ -68,12 +68,14 @@ def _resolve_distillers():
     from distillers import reddit_tone
     from distillers import schwab_fundamental as schwab_fundamental_distiller
     from distillers import social_risk
+    from distillers import uw_fundamental as uw_fundamental_distiller
     from distillers import uw_options_depth
     from distillers import youtube_attention
 
     return {
         "p0.catcher": p0_catcher.distill,
         "schwab.fundamental": schwab_fundamental_distiller.distill,
+        "uw.fundamental": uw_fundamental_distiller.distill,
         "uw.options_depth": uw_options_depth.distill,
         "reddit.tradestie": reddit_tone.distill,
         "reddit.apewisdom": reddit_crowding.distill,
@@ -95,14 +97,25 @@ def _build_registry() -> List[FeedEntry]:
         # Dormant after the Schwab sunset (default_on=False): this distiller
         # hits the Schwab quotes endpoint (OAuth), the exact dependency being
         # retired. Kept registered + code intact so it is reversible in one flag
-        # flip; its supplementary P3 fields (beta, short interest, PEG/PB, div)
-        # are accepted as a gap — EDGAR still supplies core P3.
+        # flip. Its short-interest-to-float / PEG / dividend fields have no UW
+        # equivalent at this tier and stay gapped; `beta` is restored below via
+        # uw.fundamental. EDGAR still supplies core P3.
         FeedEntry(
             feed_id="schwab.fundamental", section="P3", tier=1, vendor="schwab",
             endpoint="schwab_fundamental", cost="free", cadence="per-run",
             replay_safe=False, default_on=False, max_rows=12, max_tokens=None,
             source="cli:schwab_fundamental", distiller=d["schwab.fundamental"],
             cite_src="schwab(fundamental)",
+            fetch_args=lambda ctx: ["--ticker", ctx.ticker],
+        ),
+        # UW replacement for the one schwab.fundamental field UW covers 1:1:
+        # P3.beta (from /api/stock/{t}/info). Live snapshot -> replay_safe=False.
+        FeedEntry(
+            feed_id="uw.fundamental", section="P3", tier=1, vendor="uw",
+            endpoint="uw_info", cost="on-tier", cadence="per-run",
+            replay_safe=False, default_on=True, max_rows=4, max_tokens=None,
+            source="cli:uw_info", distiller=d["uw.fundamental"],
+            cite_src="uw(info)",
             fetch_args=lambda ctx: ["--ticker", ctx.ticker],
         ),
         FeedEntry(

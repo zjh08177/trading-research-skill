@@ -179,7 +179,7 @@ in `10-datapack.md`. Flag any section past its staleness threshold as `STALE`.
 |---|---|---|---|
 | P1 | live price + day range/vol, chg%, 52wk, mcap (derived: price × EDGAR shares), avg vol | `vendors/uw_quote.py` (live `P1.last`) + `vendors/uw_bars.py` (settled close, chg%, 52wk) + `tiingo_oracle.py --live` cross-check; fallback stock-market-pro; crypto: Crypto.com MCP | quote trade-date < `as_of`; crypto >15 min |
 | P2 | SMA20/50/200, RSI14, MACD, ATR14 (abs+%), 30d σ | `vendors/uw_bars.py`; fallback stock-market-pro | same as P1 |
-| P3 | rev/EPS TTM+YoY, margins, FCF, net debt, P/E (derived) | `vendors/edgar_fundamentals.py`; fallback stock-market-pro; crypto: `MISSING(by-design)` | >100 days |
+| P3 | rev/EPS TTM+YoY, margins, FCF, net debt, P/E (derived), beta | `vendors/edgar_fundamentals.py` (core) + `vendors/uw_info.py` → `uw.fundamental` distiller (P3.beta only; UW has no like-for-like short-int-to-float/PEG/dividends post-sunset); fallback stock-market-pro; crypto: `MISSING(by-design)` | >100 days |
 | P4 | ATM IV + term slope, put/call vol+OI, notable OI | UW P8 (`--options`, see below); no light source after the Schwab sunset — a plain run emits `P4 MISSING`; crypto: N/A | >1 trading day |
 | P5 | ≤10 dated headlines + next earnings date | `vendors/marketaux_news.py` + WebSearch (earnings date); fallback stock-market-pro news | headline >14d dropped; event job >48h flagged |
 | P6 | sentiment (equity: news tone; crypto: LunarCrush) | LunarCrush MCP / derived | >1 day |
