@@ -73,5 +73,52 @@ If a live pipeline run fails to complete (vendor auth/creds failure, etc.)
 after 2 attempts with different tickers: stop, report the exact blocker,
 and treat item 9 as incomplete rather than fabricating a pass.
 
+## Exit Gate Scoring (item 9, live run SOXL-2026-07-17-0900)
+
+Full live pipeline: real vendor APIs (schwab, tiingo, finnhub, apewisdom,
+WebSearch news fallback), real Agent-tool subagents for every LLM stage.
+qa_check.py clean (exit 0) both pre- and post-Stage-7c. Run stopped after
+Stage 7b (local HTML render) per the same no-publish discipline as the
+original SOXL-2026-07-17-0223 baseline run.
+
+| # | Original defect | Live-verified fixed? | Evidence |
+|---|---|---|---|
+| 1 | Bear fabricates bull quotes | YES | check_debate_fidelity() ALL PASS on real bear output; took 2 live rounds — round 1 surfaced a quote-mark-discipline gap (faithful paraphrases in quotes flagged as misquotes), fixed the bear card, round 2 clean |
+| 2 | Invented Sell sizing band | Structurally fixed, NOT live-exercised | No position held in either the original or this run (H1.held=false both times) — the "Your position"/SIZE line never renders. Fix verified by code read + prompt text only, not a live agent output |
+| 3 | Judges hand-count exhaustion conditions wrong | YES | All 3 live judges cited [P9.exhaustion_tally] (0/4) correctly; none cited ATR stretch as a condition |
+| 4 | Fund analyst hallucinates DATA GAP | YES | Live fund analyst correctly did NOT claim P2.atr14 as a gap (it's present); qa_check.py --brief run against all 4 live analyst briefs found zero false positives |
+| 5 | Prose-QA pass has no persisted artifact | YES | Live prose pass ran, found 3 genuine (uncorrected, out-of-scope) issues, persisted to 70-qa-prose.txt; qa_check.py --prose-qa gates on it |
+| 6 | Footer hand-guessed / "not recorded" | YES | Writer left literal {{tokens}}; Stage 7c computed real values (Agents: 12, Models: mix, Wall clock: 1483.3s, Cost: ~$0.245 estimated) from actual run artifacts |
+| 7 | Stage 1c under-distillation | YES (via item 3) | exhaustion.py's 4 booleans are exactly the additional distillation item 7 called for |
+| 8 | CROSS-CHECK FAIL unresolved | Mechanism built + independently live-verified, NOT exercised in-run | finnhub_oracle.py + price_crosscheck.py live-tested earlier with real API calls (schwab/tiingo/finnhub all agreed on AAPL); this SOXL run's own schwab/tiingo agreed too (crosscheck_status=ok), so the 2-of-3 resolution/fail_3way code paths were never hit live — only unit-tested |
+| 9 | (this gate) | Ran once, on SOXL only | ERD's item 9 asked for "SOXL plus a fresh ticker" — budget only covered SOXL. A second ticker is disclosed follow-up work, not done |
+
+**New defect found AND fixed during this live run** (not in the original 9):
+Stage 7c circular dependency — qa_check.py's disclosure-footer check was
+unconditional, so it could never exit 0 while the writer's intentionally-
+unfilled footer tokens were present, but Stage 7c (which fills them) was
+gated on that same qa_check.py call exiting 0 first. Every real run would
+have deadlocked at Stage 7. Fixed by gating the check behind an explicit
+`--check-footer` flag (commit 33a187e) — run without it pre-Stage-7c, with
+it post-patch.
+
+**Residual, out-of-Phase-0-scope findings from the live run** (correctly
+caught by PRE-EXISTING, unmodified QA machinery — not new Phase 0 items,
+listed for completeness):
+- Writer citation-adjacency mistakes (a sign-flip, a double-adjacent-tag
+  ambiguity, a wrong-number tag, a list-fact-with-adjacent-number) — all
+  caught by check_pairs()/scan_untagged(), fixed mechanically (matches the
+  pipeline's normal iterative QA-loop behavior, evidenced by the baseline
+  run's own 70-qa-attempt1/2/3.txt files).
+- Prose-QA pass's 3 genuine findings (untagged SMA200 level, an RSI-trigger
+  paraphrase inconsistency between two sections, an unsupported "decay hits
+  short and long equally" claim) were left uncorrected in the final report
+  — real, minor, not Phase 0 items, and demonstrate the prose pass is doing
+  real analytical work now that its output is persisted (item 5).
+
 ## Errors Encountered
-(none yet)
+| Error | Attempt | Resolution |
+|-------|---------|------------|
+| Stage 7c / qa_check.py circular dependency (footer check always-on) | live run, item 9 | gated behind --check-footer flag, commit 33a187e |
+| Bear quote-mark ambiguity (paraphrase-in-quotes flagged as misquote) | live run, item 9, bear round 1 | tightened bear card's quote-mark discipline, re-verified clean round 2 |
+| Writer used a shorthand meanrev summary line (not byte-identical to render_meanrev.py's real table output) in my own hand-assembled report artifact | live run, item 9 | replaced with the actual 53-meanrev-block.md script output |
