@@ -5,7 +5,26 @@ sections. Stdlib only. Usage: qa_check.py <report.md> <datapack.json>.
 Exit 0 clean, 1 on any tagged mismatch; warnings never fail. Tolerance 0.5%
 relative, relaxed to 5% for a leading ~ (approximate).
 Usage: qa_check.py <report.md> <datapack.json> [position.json]. The optional
-position file (15-position.json) is a second tag source for [H#.fact] tags."""
+position file (15-position.json) is a second tag source for [H#.fact] tags.
+--debate <30-debate.md> additionally checks that any bull-attributed quote
+in the Bear case section actually appears in the Bull case section (fabricated
+strawman detector, always hard-fail, independent of --strict).
+--brief <path> (repeatable) additionally scans an analyst-brief-style artifact
+for a DATA GAP / MISSING / "not available" claim naming a [P#.fact] tag that
+is actually present (non-null) in the pack — a hallucinated gap, always
+hard-fail, independent of --strict.
+--prose-qa <70-qa-prose.txt> requires the file to exist and be non-blank —
+proves the sonnet prose-QA pass actually ran and persisted its output;
+missing/empty is always a hard fail, independent of --strict.
+--check-footer additionally hard-fails a leftover {{token}} placeholder or a
+bare "not recorded" in the Disclosure section (invariant 7 — agent count/
+model mix/wall clock/token cost come from run_stats.py, never hand-guessed).
+NOT on by default: the writer intentionally leaves these 4 tokens unfilled
+until Stage 7c (run_stats.py --patch) runs, which itself only runs after a
+first qa_check.py pass succeeds — omit --check-footer on that first pass
+(the tokens are correctly still unfilled at that point) and pass it on the
+second, post-patch verification pass, or every run would hard-fail forever
+on its own intentional pending state."""
 import json
 import os
 import re
@@ -43,6 +62,35 @@ def to_float(s):
     return float(s.replace(",", "").replace("$", "").replace("%", ""))
 
 
+DISCLOSURE_SECTION_RE = re.compile(r"##\s*Disclosure\b(.*?)(?=\n##\s|\Z)", re.S | re.I)
+UNFILLED_TOKEN_RE = re.compile(r"\{\{[A-Za-z0-9_]+\}\}")
+NOT_RECORDED_RE = re.compile(r"not recorded", re.I)
+
+
+def check_disclosure_footer(text):
+    """Invariant 7: the Disclosure section's agent count / model mix / wall
+    clock / token cost must be real, script-computed values — never a
+    left-over {{token}} placeholder (Stage 7c didn't run) or a bare "not
+    recorded" cop-out (the writer guessed instead of leaving the token for
+    Stage 7c to fill). Returns list of (ok, message); [] if no Disclosure
+    section (nothing to check, e.g. a non-report artifact)."""
+    m = DISCLOSURE_SECTION_RE.search(text)
+    if not m:
+        return []
+    section = m.group(1)
+    results = []
+    for tok in UNFILLED_TOKEN_RE.finditer(section):
+        results.append((False, f"FAIL disclosure-footer: unfilled placeholder "
+                               f"{tok.group()} — Stage 7c (run_stats.py --patch) "
+                               f"did not run or did not find this token"))
+    if NOT_RECORDED_RE.search(section):
+        results.append((False, "FAIL disclosure-footer: 'not recorded' left in "
+                               "the Disclosure section — run_stats.py can compute "
+                               "agent count/model mix/wall clock from the run "
+                               "folder; this is never a legitimate gap"))
+    return results
+
+
 def check_pairs(text, pack):
     """Verify each number-then-tag pair against the pack. Returns list of
     (ok, message)."""
@@ -78,6 +126,75 @@ def check_pairs(text, pack):
         else:
             results.append((False, f"FAIL {fact_id}: report {num}{'%' if has_pct else ''} "
                                    f"vs pack {v} (rel {rel:.2%} > {tol:.1%})"))
+    return results
+
+
+BULL_SECTION_RE = re.compile(r"##\s*Bull case\b(.*?)(?=\n##\s|\Z)", re.S | re.I)
+BEAR_SECTION_RE = re.compile(r"##\s*Bear case\b(.*?)(?=\n##\s|\Z)", re.S | re.I)
+QUOTE_RE = re.compile(r'["“]([^"“”]{8,200})["”]')
+BULL_CUE_RE = re.compile(r"\bbull'?s?\b", re.I)
+
+
+def _norm(s):
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def check_debate_fidelity(debate_text):
+    """Invariant-1 fix: any quoted/attributed "bull" claim inside the Bear
+    case section must appear verbatim inside the Bull case section — a
+    quote near a bull-attribution cue that the bull never made is a
+    fabricated strawman, not a rebuttal. Returns list of (ok, message);
+    empty if the text has no Bull/Bear case sections (nothing to check)."""
+    bull_m = BULL_SECTION_RE.search(debate_text)
+    bear_m = BEAR_SECTION_RE.search(debate_text)
+    if not bull_m or not bear_m:
+        return []
+    bull_norm = _norm(bull_m.group(1))
+    results = []
+    for m in QUOTE_RE.finditer(bear_m.group(1)):
+        quote = m.group(1)
+        window_start = max(0, m.start() - 100)
+        cue_window = bear_m.group(1)[window_start:m.start()]
+        if not BULL_CUE_RE.search(cue_window):
+            continue  # quoted text not attributed to the bull — not this rule's concern
+        if _norm(quote) in bull_norm:
+            results.append((True, f"PASS bull-quote-fidelity: bear quote {quote!r} "
+                                   f"found verbatim in bull case"))
+        else:
+            results.append((False, f"FAIL bull-quote-fidelity: bear attributes "
+                                   f"{quote!r} to the bull but it does not appear "
+                                   f"in the Bull case section — fabricated strawman"))
+    return results
+
+
+GAP_CUE_RE = re.compile(r"\bDATA GAP\b|\bMISSING\b|not (?:currently )?(?:available|present)\b", re.I)
+BARE_FACT_RE = re.compile(r"\b([PH]\d+\.[A-Za-z0-9_]+)\b")
+GAP_PROXIMITY_CHARS = 40  # tight window: catches "DATA GAP: X [tag]" / "[tag] is MISSING",
+# not an unrelated tag mentioned later in the same long analyst paragraph
+
+
+def check_data_gap_hallucination(text, pack):
+    """A "DATA GAP"/MISSING/"not available" cue with a [P#.fact] (or bare
+    P#.fact) tag in close proximity (same clause, not just same paragraph)
+    whose value IS present (non-null) in the pack is a hallucination — the
+    analyst declared a gap for a fact it was actually handed. Returns list
+    of (ok, message); only FAILs are appended (no PASS noise)."""
+    results = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        flagged = set()
+        for cue in GAP_CUE_RE.finditer(line):
+            lo = max(0, cue.start() - GAP_PROXIMITY_CHARS)
+            hi = min(len(line), cue.end() + GAP_PROXIMITY_CHARS)
+            flagged.update(BARE_FACT_RE.findall(line[lo:hi]))
+        for fact_id in sorted(flagged):
+            fact = pack.get(fact_id)
+            if not isinstance(fact, dict):
+                continue  # not in pack: a real gap, not a hallucination
+            if fact.get("v") is None:
+                continue  # in pack but null: a real gap
+            results.append((False, f"FAIL data-gap-hallucination line {lineno}: "
+                                   f"claims {fact_id} is a DATA GAP/MISSING but the "
+                                   f"pack has v={fact['v']!r} for it"))
     return results
 
 
@@ -229,10 +346,29 @@ def main(argv=None):
         i = argv.index("--asof-cutoff")
         asof_cutoff = argv[i + 1] if i + 1 < len(argv) else None
         argv = argv[:i] + argv[i + 2:]
+    debate_path = None
+    if "--debate" in argv:
+        i = argv.index("--debate")
+        debate_path = argv[i + 1] if i + 1 < len(argv) else None
+        argv = argv[:i] + argv[i + 2:]
+    brief_paths = []
+    while "--brief" in argv:
+        i = argv.index("--brief")
+        if i + 1 < len(argv):
+            brief_paths.append(argv[i + 1])
+        argv = argv[:i] + argv[i + 2:]
+    prose_qa_path = None
+    if "--prose-qa" in argv:
+        i = argv.index("--prose-qa")
+        prose_qa_path = argv[i + 1] if i + 1 < len(argv) else None
+        argv = argv[:i] + argv[i + 2:]
+    check_footer = "--check-footer" in argv
+    argv = [a for a in argv if a != "--check-footer"]
     if len(argv) < 2:
         sys.stderr.write(
             "usage: qa_check.py <report.md> <datapack.json> [position.json] [--strict] "
-            "[--replay --asof-cutoff YYYY-MM-DD]\n")
+            "[--replay --asof-cutoff YYYY-MM-DD] [--debate 30-debate.md] "
+            "[--brief path ...] [--prose-qa 70-qa-prose.txt] [--check-footer]\n")
         return 2
     if replay_mode and not asof_cutoff:
         sys.stderr.write("qa_check.py: --replay requires --asof-cutoff YYYY-MM-DD\n")
@@ -270,14 +406,44 @@ def main(argv=None):
         replay_errors += [f"REPLAY {e}" for e in r_errors]
         replay_errors += [f"REPLAY {e}" for e in scan_replay_report(report, pack)]
 
+    debate_errors = []
+    if debate_path and os.path.exists(debate_path):
+        with open(debate_path) as f:
+            debate_results = check_debate_fidelity(f.read())
+        debate_errors = [msg for ok, msg in debate_results if not ok]
+
+    gap_errors = []
+    for brief_path in brief_paths:
+        if not os.path.exists(brief_path):
+            continue
+        with open(brief_path) as f:
+            brief_text = f.read()
+        gap_errors += [f"{os.path.basename(brief_path)}: {msg}"
+                        for ok, msg in check_data_gap_hallucination(brief_text, pack) if not ok]
+    gap_errors += [msg for ok, msg in check_data_gap_hallucination(report, pack) if not ok]
+
+    prose_qa_errors = []
+    if prose_qa_path is not None:
+        if not os.path.exists(prose_qa_path):
+            prose_qa_errors.append(f"prose-QA artifact missing: {prose_qa_path} "
+                                   f"(Stage 7 sonnet prose pass cannot be proven to have run)")
+        elif not open(prose_qa_path).read().strip():
+            prose_qa_errors.append(f"prose-QA artifact empty: {prose_qa_path} "
+                                   f"(a clean pass still writes 'PROSE QA: clean')")
+
+    footer_errors = ([msg for ok, msg in check_disclosure_footer(report) if not ok]
+                     if check_footer else [])
+
     results = check_pairs(strip_riskbox(report), pack)
     dresults, dwarnings = recompute_derived(pack)
     results += dresults
     warnings = scan_untagged(report) + dwarnings
     result_fails = [msg for ok, msg in results if not ok]
     hard_base = result_fails + warnings if strict else result_fails
-    hard = replay_errors + invariant19_errors + hard_base  # cutoff/replay/invariant-19 failures
-    # are always hard, independent of --strict
+    hard = (replay_errors + invariant19_errors + debate_errors + gap_errors
+            + prose_qa_errors + footer_errors + hard_base)
+    # cutoff/replay/invariant-19/debate-fidelity/gap-hallucination/prose-qa/
+    # disclosure-footer failures are always hard, independent of --strict
     out = ["== QA CITE CHECK =="]
     if replay_errors:
         out.append("== REPLAY GUARD ==")
@@ -285,6 +451,18 @@ def main(argv=None):
     if invariant19_errors:
         out.append("== INVARIANT 19 (counter-trend triggers) ==")
         out += ["! " + msg for msg in invariant19_errors]
+    if prose_qa_errors:
+        out.append("== PROSE QA ARTIFACT ==")
+        out += ["! " + msg for msg in prose_qa_errors]
+    if debate_errors:
+        out.append("== DEBATE FIDELITY (bear quoting bull) ==")
+        out += ["! " + msg for msg in debate_errors]
+    if gap_errors:
+        out.append("== DATA GAP HALLUCINATION ==")
+        out += ["! " + msg for msg in gap_errors]
+    if footer_errors:
+        out.append("== DISCLOSURE FOOTER (invariant 7) ==")
+        out += ["! " + msg for msg in footer_errors]
     out += [("  " if ok else "! ") + msg for ok, msg in results]
     if warnings:
         out.append("== WARNINGS (non-fatal) ==")
