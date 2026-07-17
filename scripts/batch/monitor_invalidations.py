@@ -2,7 +2,7 @@
 """Daily invalidation monitor (v2.3 workstream F).
 
 Reads every live decision-levels registry (published by publish_levels.py), pulls the
-current price per holding (equities/ETFs via schwab_quote; crypto via Crypto.com public
+current price per holding (equities/ETFs via uw_quote; crypto via Crypto.com public
 REST), and reports which downside/upside triggers have FIRED — each with the action the
 report prescribed (Sell / Exit / Trim / Add / re-rate…). Zero fired → one all-clear line.
 Writes a vault monitor-<date>.md and prints a summary; wire to a weekday pre-market
@@ -119,9 +119,9 @@ def crypto_prices():
 
 
 def equity_price(ticker):
-    """schwab_quote P1.last (realtime NBBO intraday; last settled close otherwise)."""
+    """uw_quote P1.last (UW stock-state last price; settled close otherwise)."""
     try:
-        r = subprocess.run([PY, os.path.join(VENDORS, "schwab_quote.py"), "--ticker", ticker],
+        r = subprocess.run([PY, os.path.join(VENDORS, "uw_quote.py"), "--ticker", ticker],
                            capture_output=True, text=True, timeout=40)
         if r.returncode != 0 or not r.stdout.strip():
             return None

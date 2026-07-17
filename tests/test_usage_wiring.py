@@ -52,14 +52,14 @@ def _rfct(v, unit="x", asof="2026-07-01"):
 
 
 def _replay_fake_run_cli(calls_out):
-    """Canned vendor responses for the replay branch. schwab_bars always
+    """Canned vendor responses for the replay branch. uw_bars always
     reports a settled bar dated 2026-07-01 regardless of the --asof it was
     probed with, so entry_market_asof deterministically falls back to
     effective_market_asof (conservative_fallback=True) -- no vendor call ever
     returns a bar strictly after the 2026-07-01 cutoff used by these tests."""
     def run_cli(name, args):
         calls_out.append((name, list(args)))
-        if name == "schwab_bars":
+        if name == "uw_bars":
             return 0, {"P1.price": _rfct(100.0, "USD", "2026-07-01"),
                        "P2.atr14": _rfct(5.0, "USD", "2026-07-01")}, ""
         if name == "tiingo_oracle":
@@ -79,7 +79,7 @@ def _replay_fake_run_cli_with_p5_gaps(calls_out):
     must POP P5._gaps into the Data gaps section, never leave it as a pseudo-fact."""
     def run_cli(name, args):
         calls_out.append((name, list(args)))
-        if name == "schwab_bars":
+        if name == "uw_bars":
             return 0, {"P1.price": _rfct(100.0, "USD", "2026-07-01"),
                        "P2.atr14": _rfct(5.0, "USD", "2026-07-01")}, ""
         if name == "tiingo_oracle":
@@ -150,7 +150,7 @@ def test_replay_invocation_writes_scope_skips_positions_and_live_only_facts(tmp_
     datapack = json.loads((run_dir / "10-datapack.json").read_text())
     assert not any(k.startswith("P4.") for k in datapack)
     assert not any(k.startswith("P8.") for k in datapack)
-    assert not any(name in ("schwab_quote", "schwab_options", "uw_options") for name, _ in calls)
+    assert not any(name in ("uw_quote", "schwab_options", "uw_options") for name, _ in calls)
 
 
 def test_replay_asof_slash_date_normalized_before_vendor_calls(tmp_path, monkeypatch):
@@ -167,10 +167,10 @@ def test_replay_asof_slash_date_normalized_before_vendor_calls(tmp_path, monkeyp
     scope = json.loads((run_dir / "00-scope.json").read_text())
     assert scope["requested_cutoff"] == "2026-07-01"
 
-    # No vendor call ever sees a slash-date token -- the FIRST schwab_bars
+    # No vendor call ever sees a slash-date token -- the FIRST uw_bars
     # call (the cutoff fetch, before any post-cutoff probing) must carry the
     # normalized ISO cutoff, and no call anywhere carries a "/" in --asof.
-    assert calls[0] == ("schwab_bars", ["--ticker", "TSLA", "--asof", "2026-07-01"])
+    assert calls[0] == ("uw_bars", ["--ticker", "TSLA", "--asof", "2026-07-01"])
     for name, args in calls:
         if "--asof" in args:
             asof_val = args[args.index("--asof") + 1]
@@ -200,14 +200,14 @@ def test_probe_entry_market_asof_returns_none_when_no_post_cutoff_bar_found():
     assert result is None
 
 
-def test_live_default_path_still_writes_positions_and_options(tmp_path, monkeypatch):
+def test_live_default_path_writes_positions_no_light_options(tmp_path, monkeypatch):
     calls = []
 
     def fake_run_cli(name, args):
         calls.append(name)
-        if name == "schwab_bars":
+        if name == "uw_bars":
             return 0, {"P1.price": _rfct(100.0), "P2.atr14": _rfct(5.0)}, ""
-        if name == "schwab_quote":
+        if name == "uw_quote":
             return 0, {"P1.last": _rfct(101.0)}, ""
         if name == "tiingo_oracle":
             return 0, {"P1.px_close_oob": _rfct(100.1)}, ""
@@ -216,8 +216,6 @@ def test_live_default_path_still_writes_positions_and_options(tmp_path, monkeypa
         if name == "marketaux_news":
             return 0, {"P5.headlines": {"v": [], "unit": "articles", "asof": "2026-07-01",
                                          "src": "marketaux"}}, ""
-        if name == "schwab_options":
-            return 0, {"P4.atm_iv_near": _rfct(0.4, "ratio")}, ""
         return 1, None, f"unexpected call in live branch: {name}"
 
     monkeypatch.setattr(bd, "run_cli", fake_run_cli)
@@ -229,8 +227,8 @@ def test_live_default_path_still_writes_positions_and_options(tmp_path, monkeypa
     holdings_path.write_text(json.dumps({"holdings": []}))
 
     today = dt.date.today().isoformat()
-    # No --options: exercises the DEFAULT live path (schwab_p4 options, same as
-    # the pre-replay behavior) rather than the --options/uw_options branch.
+    # No --options: the DEFAULT live path uses UW P1/P2 and, after the Schwab
+    # sunset, has NO light options source -> P4 is a named gap (Schwab P4 gone).
     bd.main(['[["TSLA", "equity"]]', "--asof", today, "--holdings", str(holdings_path)])
 
     run_dir = tmp_path / f"TSLA-{today}-1300"
@@ -239,8 +237,9 @@ def test_live_default_path_still_writes_positions_and_options(tmp_path, monkeypa
     assert not (run_dir / "00-scope.json").exists()  # scope.json is replay-only
 
     datapack = json.loads((run_dir / "10-datapack.json").read_text())
-    assert "P4.atm_iv_near" in datapack
-    assert "schwab_quote" in calls
+    assert "P4.atm_iv_near" not in datapack            # no light options post-sunset
+    assert "schwab_options" not in calls               # Schwab never invoked
+    assert "uw_quote" in calls
 
 
 # --- v2.5 historical as-of replay: workflow + host doc wiring -----------------
