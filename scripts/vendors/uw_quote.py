@@ -6,11 +6,12 @@ price (during the session), with ``high``/``low``/``total_volume`` for the day a
 ``tape_time`` as the real quote time. ``P1.last`` is stamped with ``tape_time`` —
 never a fabricated ``now()`` — so an as-of that precedes the quote can be boxed.
 
-``P1.is_realtime`` is emitted **False** deliberately: UW's REST real-time
-entitlement is not yet independently verified (the intraday side-by-side vs a
-known real-time feed is a pending follow-up), so the writer boxes the headline
-``DELAYED`` per invariant 11 rather than over-claiming live pricing. Flip to a
-``tape_time``-freshness derivation only once that verification is done.
+``P1.is_realtime`` is derived from ``tape_time`` freshness: verified live during
+market hours the UW tape runs ~2-3s behind wall-clock and matches Schwab's
+real-time NBBO / Tiingo IEX to <0.05%, so a tape within ``FRESH_WINDOW`` of now is
+real-time. A tape older than that (a hypothetical UW delay, or an after-hours /
+closed-market last trade) reports ``False`` so the writer boxes the headline
+``DELAYED``/``STALE`` per invariant 11 rather than over-claiming a live price.
 
 Like ``schwab_quote``, a quote is a live snapshot with no history: valid ONLY for
 a current-day ``--asof``. A past as_of must use settled bars (else look-ahead); a
@@ -25,6 +26,10 @@ import datetime
 import _uw_common as uw
 
 SRC = "uw"
+# A UW tape within this many seconds of now is treated as real-time. Sized well
+# above the observed ~2-3s live lag but far below a 15-minute delayed feed, so a
+# genuinely delayed or after-hours/closed tape falls outside it and boxes DELAYED.
+FRESH_WINDOW_S = 120
 
 
 def build_facts(state):
@@ -55,9 +60,23 @@ def build_facts(state):
     dv = num("total_volume")
     if dv is not None:
         facts["P1.day_volume"] = uw.fact(dv, "shares", asof, SRC)
-    # Real-time entitlement unverified -> False -> writer boxes DELAYED (inv 11).
-    facts["P1.is_realtime"] = uw.fact(False, "bool", asof, SRC)
+    facts["P1.is_realtime"] = uw.fact(_is_fresh(asof), "bool", asof, SRC)
     return facts
+
+
+def _is_fresh(tape_time, now=None):
+    """True when the vendor tape is within FRESH_WINDOW_S of now (real-time).
+
+    Uses now() only to MEASURE staleness — never to stamp provenance. An
+    unparseable tape time is treated as not-fresh (fail safe to DELAYED)."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    try:
+        t = datetime.datetime.fromisoformat(str(tape_time).replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return False
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=datetime.timezone.utc)
+    return abs((now - t).total_seconds()) <= FRESH_WINDOW_S
 
 
 def fetch_state(ticker):

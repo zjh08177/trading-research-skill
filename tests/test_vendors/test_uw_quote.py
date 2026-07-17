@@ -32,10 +32,18 @@ def test_p1_contract_and_tape_asof(monkeypatch):
     assert all(v["asof"] == "2026-07-16T23:59:28Z" for v in facts.values())
 
 
-def test_is_realtime_false_boxes_delayed(monkeypatch):
-    # Deliberate: UW REST real-time entitlement unverified -> False -> DELAYED.
+def test_is_realtime_derived_from_tape_freshness():
+    # A tape older than the fresh window (STATE's tape_time is 2026-07-16, days
+    # stale relative to any real 'now') reports not-real-time -> writer boxes DELAYED.
     facts = uw_quote.build_facts(STATE)
     assert facts["P1.is_realtime"]["v"] is False
+
+
+def test_is_fresh_true_for_recent_tape():
+    now = datetime.datetime(2026, 7, 17, 17, 5, 0, tzinfo=datetime.timezone.utc)
+    assert uw_quote._is_fresh("2026-07-17T17:04:58Z", now=now) is True   # 2s old
+    assert uw_quote._is_fresh("2026-07-17T16:50:00Z", now=now) is False  # 15m old
+    assert uw_quote._is_fresh("garbage", now=now) is False               # fail-safe
 
 
 def test_missing_close_exits_3(monkeypatch):
