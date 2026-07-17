@@ -151,7 +151,7 @@ call.
 | 2 | Judges receive byte-identical inputs; orchestrator never summarizes, paraphrases, or "repairs" any agent output. The bear advocate runs AFTER the bull (3a → 3b, not parallel) and reads the bull's actual output — any bull claim the bear quotes or characterizes must be faithful to that text, never a fabricated strawman. | SKILL.md invariant + artifacts are the only inter-stage channel; `qa_check.py --debate 30-debate.md` hard-fails a quote attributed to the bull that doesn't appear in the Bull case section |
 | 3 | Ledger is read/written only through `ledger.py`; reads filter `date_utc < as_of` (two-sided guard). | script is sole entry point; the `~/.tradingagents/memory/` path is BANNED |
 | 4 | Numbers in the report carry `[P#.fact]` tags or a URL; untagged numbers fail QA. | `qa_check.py` vs `datapack.json` |
-| 5 | Dead data source → named `MISSING(reason)` section + Data Gaps box; dead P1 → abstain report + `no_call` ledger row. Never silent. | pack contract + failure map |
+| 5 | Dead data source → named `MISSING(reason)` section + Data Gaps box; dead P1 → abstain report + `no_call` ledger row. Never silent. A DATA GAP/MISSING claim naming a fact the pack actually has a value for is a hallucination, not a legitimate gap. | pack contract + failure map; `qa_check.py --brief`/report scan hard-fails a hallucinated gap |
 | 6 | Move/level language states ATR14 multiples before any escalation word. | prompts.md role cards + QA prose pass |
 | 7 | Footer discloses: actual N, agent count, model mix, wall clock, token cost. Thin ensemble (<3 valid votes) is never presented as N≥3. | run-stats collection + template slot |
 | 8 | Escalation (spread ≥2 at N=3 → N=5) always runs; R7 overrun is disclosed, never skipped. | `ensemble.py` decision output |
@@ -226,7 +226,7 @@ positions only, no order path (invariant 13).
 source, never both — SnapTrade already aggregates Schwab if the owner linked it, so
 summing would double-count. The fact `src` stamp records which source ran.
 
-When Stage 1b wrote the artifact, pass it to QA as `qa_check.py 60-report.md 10-datapack.json 15-position.json`; otherwise (back-dated/auth-fail runs write none) use the 2-arg form. `qa_check.py` tolerates an absent position path either way. Always append `--debate 30-debate.md` — this checks the bear's bull-attributed quotes against the actual `## Bull case` section (invariant 1, see below); a fabricated strawman quote is a hard QA failure independent of `--strict`.
+When Stage 1b wrote the artifact, pass it to QA as `qa_check.py 60-report.md 10-datapack.json 15-position.json`; otherwise (back-dated/auth-fail runs write none) use the 2-arg form. `qa_check.py` tolerates an absent position path either way. Always append `--debate 30-debate.md` — this checks the bear's bull-attributed quotes against the actual `## Bull case` section (invariant 1, see below); a fabricated strawman quote is a hard QA failure independent of `--strict`. Always append `--brief 20-analyst-<name>.md` once per analyst artifact present — this catches a "DATA GAP"/MISSING claim naming a `[P#.fact]` the pack actually has a value for (a hallucination, hard-fail independent of `--strict`).
 
 ## Ledger
 

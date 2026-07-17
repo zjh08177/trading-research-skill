@@ -8,7 +8,11 @@ Usage: qa_check.py <report.md> <datapack.json> [position.json]. The optional
 position file (15-position.json) is a second tag source for [H#.fact] tags.
 --debate <30-debate.md> additionally checks that any bull-attributed quote
 in the Bear case section actually appears in the Bull case section (fabricated
-strawman detector, always hard-fail, independent of --strict)."""
+strawman detector, always hard-fail, independent of --strict).
+--brief <path> (repeatable) additionally scans an analyst-brief-style artifact
+for a DATA GAP / MISSING / "not available" claim naming a [P#.fact] tag that
+is actually present (non-null) in the pack — a hallucinated gap, always
+hard-fail, independent of --strict."""
 import json
 import os
 import re
@@ -119,6 +123,37 @@ def check_debate_fidelity(debate_text):
             results.append((False, f"FAIL bull-quote-fidelity: bear attributes "
                                    f"{quote!r} to the bull but it does not appear "
                                    f"in the Bull case section — fabricated strawman"))
+    return results
+
+
+GAP_CUE_RE = re.compile(r"\bDATA GAP\b|\bMISSING\b|not (?:currently )?(?:available|present)\b", re.I)
+BARE_FACT_RE = re.compile(r"\b([PH]\d+\.[A-Za-z0-9_]+)\b")
+GAP_PROXIMITY_CHARS = 40  # tight window: catches "DATA GAP: X [tag]" / "[tag] is MISSING",
+# not an unrelated tag mentioned later in the same long analyst paragraph
+
+
+def check_data_gap_hallucination(text, pack):
+    """A "DATA GAP"/MISSING/"not available" cue with a [P#.fact] (or bare
+    P#.fact) tag in close proximity (same clause, not just same paragraph)
+    whose value IS present (non-null) in the pack is a hallucination — the
+    analyst declared a gap for a fact it was actually handed. Returns list
+    of (ok, message); only FAILs are appended (no PASS noise)."""
+    results = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        flagged = set()
+        for cue in GAP_CUE_RE.finditer(line):
+            lo = max(0, cue.start() - GAP_PROXIMITY_CHARS)
+            hi = min(len(line), cue.end() + GAP_PROXIMITY_CHARS)
+            flagged.update(BARE_FACT_RE.findall(line[lo:hi]))
+        for fact_id in sorted(flagged):
+            fact = pack.get(fact_id)
+            if not isinstance(fact, dict):
+                continue  # not in pack: a real gap, not a hallucination
+            if fact.get("v") is None:
+                continue  # in pack but null: a real gap
+            results.append((False, f"FAIL data-gap-hallucination line {lineno}: "
+                                   f"claims {fact_id} is a DATA GAP/MISSING but the "
+                                   f"pack has v={fact['v']!r} for it"))
     return results
 
 
@@ -275,10 +310,17 @@ def main(argv=None):
         i = argv.index("--debate")
         debate_path = argv[i + 1] if i + 1 < len(argv) else None
         argv = argv[:i] + argv[i + 2:]
+    brief_paths = []
+    while "--brief" in argv:
+        i = argv.index("--brief")
+        if i + 1 < len(argv):
+            brief_paths.append(argv[i + 1])
+        argv = argv[:i] + argv[i + 2:]
     if len(argv) < 2:
         sys.stderr.write(
             "usage: qa_check.py <report.md> <datapack.json> [position.json] [--strict] "
-            "[--replay --asof-cutoff YYYY-MM-DD] [--debate 30-debate.md]\n")
+            "[--replay --asof-cutoff YYYY-MM-DD] [--debate 30-debate.md] "
+            "[--brief path ...]\n")
         return 2
     if replay_mode and not asof_cutoff:
         sys.stderr.write("qa_check.py: --replay requires --asof-cutoff YYYY-MM-DD\n")
@@ -322,14 +364,25 @@ def main(argv=None):
             debate_results = check_debate_fidelity(f.read())
         debate_errors = [msg for ok, msg in debate_results if not ok]
 
+    gap_errors = []
+    for brief_path in brief_paths:
+        if not os.path.exists(brief_path):
+            continue
+        with open(brief_path) as f:
+            brief_text = f.read()
+        gap_errors += [f"{os.path.basename(brief_path)}: {msg}"
+                        for ok, msg in check_data_gap_hallucination(brief_text, pack) if not ok]
+    gap_errors += [msg for ok, msg in check_data_gap_hallucination(report, pack) if not ok]
+
     results = check_pairs(strip_riskbox(report), pack)
     dresults, dwarnings = recompute_derived(pack)
     results += dresults
     warnings = scan_untagged(report) + dwarnings
     result_fails = [msg for ok, msg in results if not ok]
     hard_base = result_fails + warnings if strict else result_fails
-    hard = replay_errors + invariant19_errors + debate_errors + hard_base  # cutoff/replay/
-    # invariant-19/debate-fidelity failures are always hard, independent of --strict
+    hard = replay_errors + invariant19_errors + debate_errors + gap_errors + hard_base
+    # cutoff/replay/invariant-19/debate-fidelity/gap-hallucination failures are
+    # always hard, independent of --strict
     out = ["== QA CITE CHECK =="]
     if replay_errors:
         out.append("== REPLAY GUARD ==")
@@ -340,6 +393,9 @@ def main(argv=None):
     if debate_errors:
         out.append("== DEBATE FIDELITY (bear quoting bull) ==")
         out += ["! " + msg for msg in debate_errors]
+    if gap_errors:
+        out.append("== DATA GAP HALLUCINATION ==")
+        out += ["! " + msg for msg in gap_errors]
     out += [("  " if ok else "! ") + msg for ok, msg in results]
     if warnings:
         out.append("== WARNINGS (non-fatal) ==")
