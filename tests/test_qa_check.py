@@ -48,3 +48,47 @@ def test_strict_mode_fails_untagged_numbers(tmp_path):
     report.write_text("# T\n\n## Thesis\n\nRevenue grew 12.3% without a tag.\n")
     pack.write_text("{}")
     assert qa.main([str(report), str(pack), "--strict"]) == 1
+
+
+BAD_LEVELS_REPORT = """# SOXL
+### Ensemble Rating: **Hold**
+
+## Risk box
+LEVELS_JSON:
+```json
+{"schema": 2, "spot": 142.48, "triggers": [
+  {"side": "downside", "intended_action": "Buy", "level": 140.0,
+   "basis": "test", "comparison": "close_below", "action_strength": "act",
+   "rating_gate": "none", "conditions": []}
+]}
+```
+"""
+
+GOOD_LEVELS_REPORT = BAD_LEVELS_REPORT.replace('"act"', '"review"')
+
+
+def test_hard_fail_on_invariant_19_violation(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text(BAD_LEVELS_REPORT)
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    code = qa.main([str(report), str(pack)])
+    assert code == 1
+
+
+def test_valid_review_only_levels_do_not_hard_fail_on_invariant_19(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text(GOOD_LEVELS_REPORT)
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    code = qa.main([str(report), str(pack)])
+    assert code == 0
+
+
+def test_invariant_19_hard_fail_independent_of_strict(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text(BAD_LEVELS_REPORT)
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    code = qa.main([str(report), str(pack), "--strict"])
+    assert code == 1

@@ -574,6 +574,12 @@ def main(argv):
     # Re-parse the marker on every render so 56-levels.json tracks the current report
     # (SSOT for the rail + monitor F); only fall back to on-disk when parse yields nothing.
     parsed = parse_levels_marker(md, pack, rating)
+    if parsed:
+        try:
+            levels_schema.validate_level_set(parsed, pack, rating)
+        except levels_schema.LevelValidationError as e:
+            sys.stderr.write(f"ERROR: {e}\n")
+            return 3
     if parsed and (parsed.get("downside") or parsed.get("upside")):
         levels = parsed
         (d / "56-levels.json").write_text(json.dumps(levels))
