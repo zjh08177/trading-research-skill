@@ -92,10 +92,15 @@ def _build_registry() -> List[FeedEntry]:
             replay_safe=True, default_on=True, max_rows=3, max_tokens=None,
             source="derive", distiller=d["p0.catcher"], cite_src="derived",
         ),
+        # Dormant after the Schwab sunset (default_on=False): this distiller
+        # hits the Schwab quotes endpoint (OAuth), the exact dependency being
+        # retired. Kept registered + code intact so it is reversible in one flag
+        # flip; its supplementary P3 fields (beta, short interest, PEG/PB, div)
+        # are accepted as a gap — EDGAR still supplies core P3.
         FeedEntry(
             feed_id="schwab.fundamental", section="P3", tier=1, vendor="schwab",
             endpoint="schwab_fundamental", cost="free", cadence="per-run",
-            replay_safe=False, default_on=True, max_rows=12, max_tokens=None,
+            replay_safe=False, default_on=False, max_rows=12, max_tokens=None,
             source="cli:schwab_fundamental", distiller=d["schwab.fundamental"],
             cite_src="schwab(fundamental)",
             fetch_args=lambda ctx: ["--ticker", ctx.ticker],
@@ -109,16 +114,16 @@ def _build_registry() -> List[FeedEntry]:
         # -- native mirror entries (distiller=None; document full pack +
         #    drive replay/section filtering for feeds not yet distilled) --
         FeedEntry(
-            feed_id="schwab.bars", section="P1", tier=1, vendor="schwab",
-            endpoint="schwab_bars", cost="free", cadence="per-run",
+            feed_id="uw.bars", section="P1", tier=1, vendor="uw",
+            endpoint="uw_bars", cost="on-tier", cadence="per-run",
             replay_safe=True, default_on=True, max_rows=0, max_tokens=None,
-            source="native", distiller=None, cite_src="schwab(bars)",
+            source="native", distiller=None, cite_src="uw(bars)",
         ),
         FeedEntry(
-            feed_id="schwab.quote", section="P1", tier=1, vendor="schwab",
-            endpoint="schwab_quote", cost="free", cadence="per-run",
+            feed_id="uw.quote", section="P1", tier=1, vendor="uw",
+            endpoint="uw_quote", cost="on-tier", cadence="per-run",
             replay_safe=False, default_on=True, max_rows=0, max_tokens=None,
-            source="native", distiller=None, cite_src="schwab(quote)",
+            source="native", distiller=None, cite_src="uw(quote)",
         ),
         FeedEntry(
             feed_id="edgar.fundamentals", section="P3", tier=1, vendor="edgar",

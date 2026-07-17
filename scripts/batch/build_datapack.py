@@ -92,21 +92,15 @@ def run_usage_start(ticker, kind, run_id, run_dir, batch_id, position_aware, mod
 
 
 def add_options(ticker, kind, facts, gaps, options):
-    """Options wiring. Flag off (or a non-optionable kind) → the shipped Schwab P4
-    behavior. `--options` → fetch the UW P8 pack first (spot from P1.last/price,
-    ATR from P2.atr14); on success suppress the light Schwab P4 (P8 is the primary
-    options source, D2), routing P8._gaps into Data gaps; on P8 failure fall back
-    to Schwab P4 (D2/EC4)."""
-    def schwab_p4():
-        ex, d, err = run_cli("schwab_options", ["--ticker", ticker])
-        if ex == 0:
-            facts.update(d)
-        else:
-            gaps.append(f"P4 MISSING(options: {err})")
-
+    """Options wiring — UW-only after the Schwab sunset. Without `--options`
+    there is NO light options source (the former Schwab P4 is dormant), so P4 is
+    a named gap. `--options` → fetch the UW P8 pack (spot from P1.last/price, ATR
+    from P2.atr14), routing P8._gaps into Data gaps. A P8 failure or a gapped P8
+    IV group is accepted as a named gap — nothing reaches for Schwab anymore."""
     if not options:
         if kind in ("equity", "etf"):
-            schwab_p4()
+            gaps.append("P4 MISSING(no light options source after Schwab sunset; "
+                        "pass --options for the UW P8 pack)")
         else:
             gaps.append(f"P4 MISSING(by-design: {kind})")
         return
@@ -125,8 +119,7 @@ def add_options(ticker, kind, facts, gaps, options):
         return
     spot = facts.get("P1.last", {}).get("v") or facts.get("P1.price", {}).get("v")
     if not spot:
-        gaps.append("P8 MISSING(no spot price for uw_options); Schwab P4 fallback")
-        schwab_p4()
+        gaps.append("P8 MISSING(no spot price for uw_options)")
         return
     a = ["--ticker", ticker, "--spot", str(spot)]
     atr = facts.get("P2.atr14", {}).get("v")
@@ -137,24 +130,14 @@ def add_options(ticker, kind, facts, gaps, options):
         for g in (d.pop("P8._gaps", None) or []):
             gaps.append(f"P8 {g}")
         facts.update(d)
-        # D2/EC4: P8 is primary; the Schwab IV backfills ONLY when the P8 IV group
-        # itself gapped (no rank AND no IV) — other P4 fields stay suppressed.
+        # P8 is the sole options source. When its IV group gaps (no rank AND no
+        # IV) the run accepts a named P4 gap — there is no Schwab IV backfill.
         if "P8.iv_rank_1y" in facts or "P8.iv_now" in facts:
-            gaps.append("P4 suppressed under --options (UW P8 is the primary "
-                        "options source)")
+            gaps.append("P4 suppressed under --options (UW P8 is the options source)")
         else:
-            ex2, d2, err2 = run_cli("schwab_options", ["--ticker", ticker])
-            iv = {k: v for k, v in (d2 or {}).items() if k == "P4.atm_iv_near"}
-            if iv:
-                facts.update(iv)  # src=schwab already stamped by schwab_options
-                gaps.append("P4.atm_iv_near backfilled from Schwab (src=schwab) — "
-                            "P8 IV group gapped (D2/EC4); other P4 fields suppressed")
-            else:
-                gaps.append("P8 IV group gapped and Schwab IV backfill unavailable "
-                            f"({err2 if ex2 else 'no atm_iv_near'})")
+            gaps.append("P8 IV group gapped; no IV backfill (Schwab sunset)")
     else:
-        gaps.append(f"P8 MISSING(uw_options exit {ex}: {err}); Schwab P4 fallback")
-        schwab_p4()
+        gaps.append(f"P8 MISSING(uw_options exit {ex}: {err}); no options data")
 
 
 def _ctx_for(entry, ctx_base, facts):
@@ -230,12 +213,12 @@ def apply_registry_distillers(facts, gaps, degraded, ctx_base, *, mode, profile,
 
 def build_facts(ticker, kind, options=False):
     facts, gaps, degraded = {}, [], []
-    ex, d, err = run_cli("schwab_bars", ["--ticker", ticker, "--asof", ASOF])
+    ex, d, err = run_cli("uw_bars", ["--ticker", ticker, "--asof", ASOF])
     if ex == 0:
         facts.update(d)
     else:
-        gaps.append(f"P1/P2 GATE FAIL schwab_bars: {err}")
-    ex, d, err = run_cli("schwab_quote", ["--ticker", ticker, "--asof", ASOF])
+        gaps.append(f"P1/P2 GATE FAIL uw_bars: {err}")
+    ex, d, err = run_cli("uw_quote", ["--ticker", ticker, "--asof", ASOF])
     if ex == 0:
         facts.update(d)
     else:
@@ -272,10 +255,10 @@ def build_facts(ticker, kind, options=False):
     px = facts.get("P1.price", {}).get("v")
     sh = facts.get("P3.shares_outstanding", {})
     if px and sh.get("v"):
-        facts["P1.mcap"] = fact(round(px * sh["v"]), "USD", sh["asof"], "derived(schwab*sec-edgar)")
+        facts["P1.mcap"] = fact(round(px * sh["v"]), "USD", sh["asof"], "derived(uw*sec-edgar)")
     eps = facts.get("P3.eps_diluted_ttm", {}).get("v")
     if px and isinstance(eps, (int, float)) and eps > 0:
-        facts["P3.pe_ttm"] = fact(round(px / eps, 2), "ratio", ASOF, "derived(schwab/edgar)")
+        facts["P3.pe_ttm"] = fact(round(px / eps, 2), "ratio", ASOF, "derived(uw/edgar)")
     elif isinstance(eps, (int, float)) and eps <= 0:
         gaps.append(f"P3.pe_ttm omitted: EPS TTM {eps} not positive (P/E not meaningful)")
     oob = facts.get("P1.px_close_oob", {}).get("v")
@@ -284,7 +267,7 @@ def build_facts(ticker, kind, options=False):
     if oob and sw:
         rel = abs(sw - oob) / abs(sw)
         ok = "OK" if rel <= 0.005 else "FAIL"
-        xline = f"CROSS-CHECK {ok} (schwab {sw} vs tiingo {oob}, rel {rel*100:.4f}% {'<=' if ok=='OK' else '>'} 0.5%)"
+        xline = f"CROSS-CHECK {ok} (uw {sw} vs tiingo {oob}, rel {rel*100:.4f}% {'<=' if ok=='OK' else '>'} 0.5%)"
         if ok == "FAIL":
             gaps.append(xline)
     ctx_base = {"ticker": ticker, "kind": kind, "asof": ASOF, "mode": "live"}
@@ -317,11 +300,11 @@ def probe_entry_market_asof(cutoff, fetch_fn, max_probe_days=10):
 
 def resolve_entry_market_asof(ticker, cutoff, effective_market_asof):
     """entry_market_asof = first settled close strictly after `cutoff`, found via
-    `probe_entry_market_asof` against real schwab_bars probes. Falls back to
+    `probe_entry_market_asof` against real uw_bars probes. Falls back to
     `effective_market_asof` (conservative_fallback=True) when the probe can't
     determine a post-cutoff close within its calendar-day budget."""
     def fetch(probe_date_iso):
-        ex, d, _err = run_cli("schwab_bars", ["--ticker", ticker, "--asof", probe_date_iso])
+        ex, d, _err = run_cli("uw_bars", ["--ticker", ticker, "--asof", probe_date_iso])
         if ex != 0 or not d:
             return None
         return d.get("P1.price", {}).get("asof")
@@ -334,20 +317,20 @@ def resolve_entry_market_asof(ticker, cutoff, effective_market_asof):
 
 def build_facts_replay(ticker, kind, cutoff):
     """Replay variant of build_facts: PIT-safe vendor calls only. No live quote
-    (schwab_quote), no live Tiingo IEX cross-check (tiingo_oracle called without
+    (uw_quote), no live Tiingo IEX cross-check (tiingo_oracle called without
     --live), no options (P4/P8 both MISSING by design). SEC/edgar and marketaux
     both receive --asof; marketaux additionally gets --replay.
 
     Returns (facts, gaps, degraded, xline, effective_market_asof) where
-    effective_market_asof is the P1.price.asof schwab_bars emitted (its latest
+    effective_market_asof is the P1.price.asof uw_bars emitted (its latest
     settled bar <= cutoff).
     """
     facts, gaps, degraded = {}, [], []
-    ex, d, err = run_cli("schwab_bars", ["--ticker", ticker, "--asof", cutoff])
+    ex, d, err = run_cli("uw_bars", ["--ticker", ticker, "--asof", cutoff])
     if ex == 0:
         facts.update(d)
     else:
-        gaps.append(f"P1/P2 GATE FAIL schwab_bars: {err}")
+        gaps.append(f"P1/P2 GATE FAIL uw_bars: {err}")
     effective_market_asof = facts.get("P1.price", {}).get("asof")
     ex, d, err = run_cli("tiingo_oracle", ["--ticker", ticker, "--asof", cutoff])
     if ex == 0:
@@ -384,10 +367,10 @@ def build_facts_replay(ticker, kind, cutoff):
     px = facts.get("P1.price", {}).get("v")
     sh = facts.get("P3.shares_outstanding", {})
     if px and sh.get("v"):
-        facts["P1.mcap"] = fact(round(px * sh["v"]), "USD", sh["asof"], "derived(schwab*sec-edgar)")
+        facts["P1.mcap"] = fact(round(px * sh["v"]), "USD", sh["asof"], "derived(uw*sec-edgar)")
     eps = facts.get("P3.eps_diluted_ttm", {}).get("v")
     if px and isinstance(eps, (int, float)) and eps > 0:
-        facts["P3.pe_ttm"] = fact(round(px / eps, 2), "ratio", cutoff, "derived(schwab/edgar)")
+        facts["P3.pe_ttm"] = fact(round(px / eps, 2), "ratio", cutoff, "derived(uw/edgar)")
     elif isinstance(eps, (int, float)) and eps <= 0:
         gaps.append(f"P3.pe_ttm omitted: EPS TTM {eps} not positive (P/E not meaningful)")
     oob = facts.get("P1.px_close_oob", {}).get("v")
@@ -396,7 +379,7 @@ def build_facts_replay(ticker, kind, cutoff):
     if oob and sw:
         rel = abs(sw - oob) / abs(sw)
         ok = "OK" if rel <= 0.005 else "FAIL"
-        xline = f"CROSS-CHECK {ok} (schwab {sw} vs tiingo {oob}, rel {rel*100:.4f}% {'<=' if ok=='OK' else '>'} 0.5%)"
+        xline = f"CROSS-CHECK {ok} (uw {sw} vs tiingo {oob}, rel {rel*100:.4f}% {'<=' if ok=='OK' else '>'} 0.5%)"
         if ok == "FAIL":
             gaps.append(xline)
     ctx_base = {"ticker": ticker, "kind": kind, "asof": cutoff, "mode": "replay"}

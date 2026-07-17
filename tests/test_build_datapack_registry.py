@@ -27,31 +27,35 @@ def _fake_run_cli(returns):
 
 # Notable move (>=3.0%, >=1.0 ATR) so p0_catcher keeps its real signals instead
 # of collapsing to a single P0.quiet line.
+# P1/P2 now come from UW; the schwab.fundamental T1 distiller is dormant
+# (default_on=False) after the sunset, so its Schwab CLI is never invoked.
 BASE = {
-    "schwab_bars": (0, {"P1.price": _fct(420.0),
-                        "P1.chg_pct_1d": _fct(4.5, "pct"),
-                        "P2.atr14": _fct(12.5),
-                        "P2.atr14_pct": _fct(1.5, "pct")}, ""),
-    "schwab_quote": (0, {"P1.last": _fct(421.0),
-                         "P1.day_volume": _fct(1_000_000, "shares"),
-                         "P1.avg_vol_20d": _fct(900_000, "shares")}, ""),
+    "uw_bars": (0, {"P1.price": _fct(420.0),
+                    "P1.chg_pct_1d": _fct(4.5, "pct"),
+                    "P2.atr14": _fct(12.5),
+                    "P2.atr14_pct": _fct(1.5, "pct")}, ""),
+    "uw_quote": (0, {"P1.last": _fct(421.0),
+                     "P1.day_volume": _fct(1_000_000, "shares"),
+                     "P1.avg_vol_20d": _fct(900_000, "shares")}, ""),
     "tiingo_oracle": (0, {}, ""),
     "edgar_fundamentals": (0, {}, ""),
     "marketaux_news": (0, {"P5.headlines": {"v": [], "unit": "list",
                                             "asof": "2026-07-06", "src": "marketaux"}}, ""),
+    # Present but never consumed: schwab.fundamental is dormant post-sunset.
     "schwab_fundamental": (0, {"_schwab_fundamental": {"beta": 1.8}}, ""),
 }
 
 
-def test_live_build_facts_p0_present_head_and_t1_beta(monkeypatch):
+def test_live_build_facts_p0_present_fundamental_dormant(monkeypatch):
     fake, calls = _fake_run_cli(BASE)
     monkeypatch.setattr(bd, "run_cli", fake)
     facts, gaps, degraded, xline = bd.build_facts("MRVL", "equity", options=False)
     p0_keys = [k for k in facts if k.startswith("P0.")]
     assert p0_keys, "P0 catcher must contribute at least one fact"
     assert "P0.move_pct" in facts and facts["P0.move_pct"]["v"] == 4.5
-    assert "P3.beta" in facts and facts["P3.beta"]["v"] == 1.8
-    assert "schwab_fundamental" in calls
+    # Schwab sunset: the fundamental distiller is dormant -> beta not fetched.
+    assert "P3.beta" not in facts
+    assert "schwab_fundamental" not in calls
 
 
 def test_live_t2_caps_p8_list_when_options(monkeypatch):
@@ -93,8 +97,10 @@ def test_replay_omits_t1_t2_named_and_p0_within_cutoff(monkeypatch):
     facts, gaps, degraded, xline, eff = bd.build_facts_replay("MRVL", "equity", "2026-07-06")
     assert "P3.beta" not in facts
     assert not any(k.startswith("P8.") for k in facts)
-    assert "schwab_fundamental" not in calls  # never fetched in replay
-    assert any("schwab.fundamental omitted in replay (live-only)" in g for g in gaps)
+    assert "schwab_fundamental" not in calls  # dormant post-sunset; never fetched
+    # schwab.fundamental is default_on=False, so it is absent from the live
+    # footprint too -> it is NOT a replay-only omission. uw.options_depth still is.
+    assert not any("schwab.fundamental omitted in replay" in g for g in gaps)
     assert any("uw.options_depth omitted in replay (live-only)" in g for g in gaps)
     p0_keys = [k for k in facts if k.startswith("P0.")]
     assert p0_keys

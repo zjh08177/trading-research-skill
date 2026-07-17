@@ -43,13 +43,13 @@ research desk for one investor, one ticker, one decision at a time.
 
 | Capability | What it does |
 | --- | --- |
-| Sealed data pack | Schwab price/technicals, EDGAR fundamentals, headlines, Tiingo cross-checks, optional options data, and optional position facts. |
+| Sealed data pack | Unusual Whales price/technicals, EDGAR fundamentals, headlines, Tiingo cross-checks, optional options data, and optional position facts. |
 | Cited numbers | Report numbers must point to `[P#.fact]` tags or URLs; untagged numbers fail QA. |
 | Adversarial workflow | Fundamental, technical, and sentiment analysts brief independently; bull and bear researchers then attack each case. |
 | Judge ensemble | Three judges vote first; wide disagreement escalates to five; irreconcilable spread publishes as NO-CALL. |
 | Computed risk box | `risk_box.py` calculates adverse move, volatility context, and invalidation anchors before the writer touches the report. |
 | Options X-ray | `--options` adds Unusual Whales gamma, IV, skew, max pain, OI walls, and flow context without changing the equity rating. |
-| Position-aware report | SnapTrade or Schwab can add holdings, P/L, and action framing; analysts and judges never see position data. |
+| Position-aware report | SnapTrade adds holdings, P/L, and action framing; analysts and judges never see position data. |
 | HTML output | Markdown is canonical; `render_report.py` produces a self-contained styled HTML deliverable. |
 | Track record | `ledger.py` appends every report and filters history by `as_of` to avoid look-ahead leakage. |
 
@@ -105,20 +105,23 @@ export SNAPTRADE_ENV=~/.config/trading-research/snaptrade.env
 `~/.config/trading-research/vendors.env`:
 
 ```bash
-# Required for the main equity path.
-SCHWAB_CLIENT_ID=...
-SCHWAB_CLIENT_SECRET=...
-SCHWAB_TOKEN_PATH=~/.config/trading-research/schwab_token.json
-
 # Required by SEC EDGAR; this is a contact string, not a paid key.
 SEC_EDGAR_USER_AGENT="Name email@example.com"
 
 # Optional.
 TIINGO_API_KEY=...
 MARKETAUX_API_KEY=...
+
+# Dormant after the Schwab sunset — the pipeline no longer auto-invokes any
+# Schwab endpoint (price/technicals now come from Unusual Whales, positions from
+# SnapTrade). Set these ONLY if you deliberately re-enable a Schwab fallback.
+# SCHWAB_CLIENT_ID=...
+# SCHWAB_CLIENT_SECRET=...
+# SCHWAB_TOKEN_PATH=~/.config/trading-research/schwab_token.json
 ```
 
-Optional options data:
+Required — Unusual Whales powers the main equity path (price, bars, technicals)
+and, with `--options`, the dealer-positioning P8 pack:
 
 ```bash
 # ~/.config/trading-research/unusualwhales.env
@@ -180,12 +183,12 @@ That is the core design choice.
 
 | Source | Used for | Required |
 | --- | --- | --- |
-| Schwab | Live quote, bars, technicals, light options, optional account position | Yes |
+| Unusual Whales | Live quote, bars, technicals (P1/P2); dealer positioning + options flow for `--options` (P8) | Yes, paid |
 | SEC EDGAR | Fundamentals and share-count-derived market cap | Yes |
 | Tiingo | Out-of-band price cross-check | Optional |
 | Marketaux | Dated headlines | Optional |
-| Unusual Whales | Dealer positioning and options flow for `--options` | Optional, paid |
 | SnapTrade | Cross-broker read-only position context | Optional |
+| Schwab | Dormant after the sunset — price/technicals moved to UW, positions to SnapTrade; CLIs kept in-repo, never auto-invoked | No |
 
 Skipped optional sources become named Data Gaps. They do not silently vanish.
 

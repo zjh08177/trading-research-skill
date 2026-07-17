@@ -45,7 +45,7 @@ def distill(raw_rows, ctx) -> list:
         move_notable_flag = abs(move_pct) >= MOVE_NOTABLE_PCT
         signals.append(signal(
             "P0.move_pct", move_pct, "pct", bar_date,
-            "derived(schwab_bars.chg_pct_1d)", notable=move_notable_flag,
+            "derived(uw_bars.chg_pct_1d)", notable=move_notable_flag,
         ))
         move_notable = move_notable or move_notable_flag
 
@@ -54,7 +54,7 @@ def distill(raw_rows, ctx) -> list:
         atr_notable_flag = abs(move_vs_atr) >= ATR_NOTABLE
         signals.append(signal(
             "P0.move_vs_atr", move_vs_atr, "ATRs", bar_date,
-            "derived(schwab_bars/atr14)", notable=atr_notable_flag,
+            "derived(uw_bars/atr14)", notable=atr_notable_flag,
         ))
         move_notable = move_notable or atr_notable_flag
 
@@ -63,20 +63,20 @@ def distill(raw_rows, ctx) -> list:
     if ctx.mode == "replay":
         signals.append(signal(
             "P0.rel_volume", None, "x_avg", asof,
-            "derived(schwab_quote/schwab_bars)",
+            "derived(uw_quote/uw_bars)",
             gap="omitted in replay (live day_volume unavailable)",
         ))
     elif day_volume is not None and avg_vol_20d:
         rel_volume = round(day_volume / avg_vol_20d, 3)
         signals.append(signal(
             "P0.rel_volume", rel_volume, "x_avg", asof,
-            "derived(schwab_quote/schwab_bars)",
+            "derived(uw_quote/uw_bars)",
             notable=rel_volume >= REL_VOLUME_NOTABLE,
         ))
     else:
         signals.append(signal(
             "P0.rel_volume", None, "x_avg", asof,
-            "derived(schwab_quote/schwab_bars)",
+            "derived(uw_quote/uw_bars)",
             gap="day_volume or avg_vol_20d unavailable",
         ))
 
@@ -144,7 +144,7 @@ def distill(raw_rows, ctx) -> list:
     signals.append(signal(
         "P0.gap_pct", None, "pct", asof, "derived",
         gap=(
-            "deferred: needs today's open, not exposed by schwab_bars "
+            "deferred: needs today's open, not exposed by uw_bars "
             "(v1 uses move_pct/move_vs_atr)"
         ),
     ))

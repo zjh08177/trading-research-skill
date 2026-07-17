@@ -100,12 +100,12 @@ def resolved_key(row):
             row.get("evidence_type"))
 
 
-def _schwab_close(symbol, iso_date):
-    """Default price fn: settled close via schwab_bars.py (skill venv). Returns
+def _uw_close(symbol, iso_date):
+    """Default price fn: settled close via uw_bars.py (skill venv). Returns
     None on any failure — resolve then skips the row and retries a later run."""
     try:
         r = subprocess.run(
-            [sys.executable, str(SCRIPTS / "vendors" / "schwab_bars.py"),
+            [sys.executable, str(SCRIPTS / "vendors" / "uw_bars.py"),
              "--ticker", symbol, "--asof", str(iso_date)],
             capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
@@ -117,13 +117,13 @@ def _schwab_close(symbol, iso_date):
         return None
 
 
-def _schwab_close_with_asof(symbol, iso_date):
+def _uw_close_with_asof(symbol, iso_date):
     """Replay price fn: settled close + the actual bar date it was settled on,
-    via schwab_bars.py (skill venv). Returns (close, bar_date) or None on any
+    via uw_bars.py (skill venv). Returns (close, bar_date) or None on any
     failure — resolve_replay_rows then skips the row and retries a later run."""
     try:
         r = subprocess.run(
-            [sys.executable, str(SCRIPTS / "vendors" / "schwab_bars.py"),
+            [sys.executable, str(SCRIPTS / "vendors" / "uw_bars.py"),
              "--ticker", symbol, "--asof", str(iso_date)],
             capture_output=True, text=True, timeout=60)
         if r.returncode != 0:
@@ -399,7 +399,7 @@ def cmd_resolve(args):
     side = sidecar_path(path)
     resolved_ids = {r.get("run_id") for r in read_jsonl(side, "resolved-ledger")}
     new, skipped = resolve_rows(main_rows, resolved_ids, args.ticker, args.horizon,
-                                args.benchmark, asof, _schwab_close)
+                                args.benchmark, asof, _uw_close)
     if new:
         side.parent.mkdir(parents=True, exist_ok=True)
         with side.open("a") as f:
@@ -421,7 +421,7 @@ def cmd_resolve_replay(main_path, args, asof):
     side = replay_resolved_path(main_path)
     resolved_keys = {resolved_key(r) for r in read_jsonl(side, "replay-resolved-ledger")}
     new, skipped = resolve_replay_rows(rows, resolved_keys, args.ticker, args.horizon,
-                                       args.benchmark, asof, _schwab_close_with_asof)
+                                       args.benchmark, asof, _uw_close_with_asof)
     if new:
         side.parent.mkdir(parents=True, exist_ok=True)
         with side.open("a") as f:

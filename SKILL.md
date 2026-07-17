@@ -28,7 +28,7 @@ artifacts are the only channel between stages.
 |---|---|---|---|---|
 | 0 Scope | orchestrator | session | query | `00-scope.md` (job class, tickers, asset class; ambiguity → AskUserQuestion once) |
 | 1 Data pack | orchestrator via `scripts/vendors/*` CLIs; fallback finance skills/MCP | session | live tools | `10-datapack.md` + `.json` |
-| 1b Position | orchestrator via `scripts/vendors/snaptrade_account.py` (cross-broker; `schwab_account.py` fallback); current-day only | session | live tool | `15-position.md` + `.json` (WITHHELD from stages 2–5) |
+| 1b Position | orchestrator via `scripts/vendors/snaptrade_account.py` (cross-broker; SnapTrade-only — `schwab_account.py` fallback is dormant post-sunset); current-day only | session | live tool | `15-position.md` + `.json` (WITHHELD from stages 2–5) |
 | 2 Analysts ×3 | Agent tool, parallel | sonnet | full pack verbatim | `20-analyst-{fund,tech,sent}.md` |
 | 3 Debate | bull + bear agents, parallel, 2 waves | sonnet | pack + analyst briefs | `30-debate.md` |
 | 4a Risk box (computed) | `scripts/risk_box.py` | — | `10-datapack.json` | `40-riskbox-block.md` (inserted into report VERBATIM) |
@@ -152,10 +152,10 @@ Enforce all seventeen. Any violation is a defect, not a judgment call.
 | 8 | Escalation (spread ≥2 at N=3 → N=5) always runs; R7 overrun is disclosed, never skipped. | `ensemble.py` decision output |
 | 9 | Spread ≥3 at N=5 → headline `NO-CALL`, distribution still published + ledger-logged. | `ensemble.py` |
 | 10 | P1–P5 fill from the named vendor CLIs; every fallback-filled fact stamps its real `src` and the section is boxed `DEGRADED(P#, reason)` in Data Gaps. P1 carries a tiingo cross-check stamp: same-asof-date closes within 0.5% → CROSS-CHECK OK, else CROSS-CHECK FAIL named in Data Gaps (run continues). | CLIs exit nonzero and never fabricate; orchestrator stamps src + gaps |
-| 11 | Current-day runs use `schwab_quote.py` `P1.last` (real trade-time) as the price headline; box it `DELAYED` when `P1.is_realtime` is false and `STALE(as-of <date>)` when its trade-date precedes `as_of`. Prior close and chg% derive from `schwab_bars.py` settled bars, never the quote. The live quote is valid only when `as_of` is today — the CLI refuses a past/future `as_of` (exit 3), so back-dated runs use settled bars. When `P1.last` is absent (back-dated or quote-failed), the headline cites `[P1.price]` `settled close` — never a tag missing from the pack. | `schwab_quote.py` guard (as_of==today, parsed dates); writer picks `[P1.last]`/`[P1.price]` by pack presence; `tiingo_oracle.py --live` `P1.px_last_oob` cross-checks |
+| 11 | Current-day runs use `uw_quote.py` `P1.last` (real trade-time) as the price headline; box it `DELAYED` when `P1.is_realtime` is false and `STALE(as-of <date>)` when its trade-date precedes `as_of`. `uw_quote` derives `P1.is_realtime` from `tape_time` freshness (UW REST verified real-time intraday — tape ~2-3s behind, matches Schwab NBBO/Tiingo IEX to <0.05%); a stale or after-hours tape reports false so the headline boxes `DELAYED`. Prior close and chg% derive from `uw_bars.py` settled bars, never the quote. The live quote is valid only when `as_of` is today — the CLI refuses a past/future `as_of` (exit 3), so back-dated runs use settled bars. When `P1.last` is absent (back-dated or quote-failed), the headline cites `[P1.price]` `settled close` — never a tag missing from the pack. | `uw_quote.py` guard (as_of==today, parsed dates); writer picks `[P1.last]`/`[P1.price]` by pack presence; `tiingo_oracle.py --live` `P1.px_last_oob` cross-checks |
 | 12 | Position facts (`15-position.*`) are withheld from analysts, debate, risk, and judges; only the writer and `qa_check.py` read them. The rating is position-blind. | stage read-sets above; artifact is never merged into `10-datapack.*` |
-| 13 | Account access is read-only across every position source: the CLIs list accounts + positions only (Schwab `GET /accounts`; SnapTrade `list_user_accounts` + `get_all_account_positions`). No order, trade, or mutation endpoint is ever referenced. | CLIs hold no order path; `test_schwab_account.py` + `test_snaptrade_account.py` assert absence |
-| 14 | Position is live-only: a past/future `--asof` yields no position (exit 3), never a fabricated historical holding. | `snaptrade_account.py` / `schwab_account.py` `--asof` guard (parsed dates vs today) |
+| 13 | Account access is read-only across every position source: the CLIs list accounts + positions only (SnapTrade `list_user_accounts` + `get_all_account_positions`; the dormant `schwab_account.py` uses Schwab `GET /accounts`). No order, trade, or mutation endpoint is ever referenced. | CLIs hold no order path; `test_schwab_account.py` + `test_snaptrade_account.py` assert absence |
+| 14 | Position is live-only: a past/future `--asof` yields no position (exit 3), never a fabricated historical holding. | `snaptrade_account.py` (active) / `schwab_account.py` (dormant) `--asof` guard (parsed dates vs today) |
 | 15 | The position never changes the headline call — only the action framing around it. A "Your Position" section that argues the rating is a defect. | writer role card; QA prose pass |
 | 16 | The risk box's adverse-move, invalidation, and context numbers come only from `risk_box.py`, inserted verbatim as `40-riskbox-block.md`; the risk officer narrates around it and never recomputes them. The block is context-only — never an action/size, never changes the rating. | `risk_box.py` emits the block; officer card forbids recompute; `qa_check.py` exempts the verbatim region |
 | 17 | Decision levels preserve execution qualifiers. Reports emit schema-v2 `LEVELS_JSON` with comparison, action strength, rating gate, and confirmation conditions. A crossed level is never automatically an execution instruction: Hold-rated directional triggers are review-only, legacy `LEVELS:` is upgraded to safe review-first semantics, and action-plan rows use `ACT` only for `confirmed_act`. | `levels_schema.py`; `render_report.py`; `monitor_invalidations.py`; `action_plan.py`; `portfolio_delta.py`; `qa_check.py --strict` |
@@ -172,15 +172,15 @@ invent its content.
 
 Fetch the pack first (Stage 1) and inject it verbatim into every downstream
 agent. Key `10-datapack.json` by fact id — `{"P2.atr14": {"v": 19.86, "unit":
-"USD", "asof": "...", "src": "schwab"}}` — and render the same facts
+"USD", "asof": "...", "src": "uw"}}` — and render the same facts
 in `10-datapack.md`. Flag any section past its staleness threshold as `STALE`.
 
 | § | Content | Source | STALE when |
 |---|---|---|---|
-| P1 | live price + day range/vol, chg%, 52wk, mcap (derived: price × EDGAR shares), avg vol | `vendors/schwab_quote.py` (live `P1.last`) + `vendors/schwab_bars.py` (settled close, chg%, 52wk) + `tiingo_oracle.py --live` cross-check; fallback stock-market-pro; crypto: Crypto.com MCP | quote trade-date < `as_of`; crypto >15 min |
-| P2 | SMA20/50/200, RSI14, MACD, ATR14 (abs+%), 30d σ | `vendors/schwab_bars.py`; fallback stock-market-pro | same as P1 |
+| P1 | live price + day range/vol, chg%, 52wk, mcap (derived: price × EDGAR shares), avg vol | `vendors/uw_quote.py` (live `P1.last`) + `vendors/uw_bars.py` (settled close, chg%, 52wk) + `tiingo_oracle.py --live` cross-check; fallback stock-market-pro; crypto: Crypto.com MCP | quote trade-date < `as_of`; crypto >15 min |
+| P2 | SMA20/50/200, RSI14, MACD, ATR14 (abs+%), 30d σ | `vendors/uw_bars.py`; fallback stock-market-pro | same as P1 |
 | P3 | rev/EPS TTM+YoY, margins, FCF, net debt, P/E (derived) | `vendors/edgar_fundamentals.py`; fallback stock-market-pro; crypto: `MISSING(by-design)` | >100 days |
-| P4 | ATM IV + term slope, put/call vol+OI, notable OI | `vendors/schwab_options.py`; fallback stock-market-pro; crypto: N/A | >1 trading day |
+| P4 | ATM IV + term slope, put/call vol+OI, notable OI | UW P8 (`--options`, see below); no light source after the Schwab sunset — a plain run emits `P4 MISSING`; crypto: N/A | >1 trading day |
 | P5 | ≤10 dated headlines + next earnings date | `vendors/marketaux_news.py` + WebSearch (earnings date); fallback stock-market-pro news | headline >14d dropped; event job >48h flagged |
 | P6 | sentiment (equity: news tone; crypto: LunarCrush) | LunarCrush MCP / derived | >1 day |
 | P7 | track record | `ledger.py read --ticker X --before <as_of>` | guard is code, not prose |
@@ -194,7 +194,7 @@ stdout or exits nonzero with a one-line stderr reason — merge stdout objects i
 stamp `DEGRADED(P#, reason)`. List-valued facts (P4.iv_term, P4.notable_oi,
 P5.headlines) are context, never numerically tagged in the report.
 
-For P1 on a current-day run, also run `schwab_quote.py` (live `P1.last` + day
+For P1 on a current-day run, also run `uw_quote.py` (live `P1.last` + day
 range/vol; refuses a past `--asof` so back-dated runs use settled bars) and add
 `--live` to `tiingo_oracle.py` (emits the `P1.px_last_oob` cross-check). Use
 `P1.last` as the price headline with its trade-time as-of; keep `P1.price`
@@ -214,10 +214,11 @@ flat → `{"H1.held": false}` (cold-start report unchanged); back-dated or
 auth-fail → no artifact, noted in Data Gaps. Read-only: lists accounts +
 positions only, no order path (invariant 13).
 
-**Fallback:** if `snaptrade_account.py` exits 2 (unconfigured/auth), fall back to
-`schwab_account.py --ticker X --asof <date>` (Schwab-only, `src: schwab`). Use ONE
-source, never both — SnapTrade already aggregates Schwab if the owner linked it, so
-summing would double-count. The fact `src` stamp records which source ran.
+**No live fallback (Schwab sunset):** if `snaptrade_account.py` exits 2
+(unconfigured/auth), "Your Position" is omitted and noted in Data Gaps — the run
+continues position-blind. The former `schwab_account.py` fallback is dormant (kept
+in-repo, never auto-invoked) so the Schwab OAuth token can lapse without breaking a
+run; SnapTrade already aggregates Schwab positions if the owner linked that broker.
 
 When Stage 1b wrote the artifact, pass it to QA as `qa_check.py 60-report.md 10-datapack.json 15-position.json`; otherwise (back-dated/auth-fail runs write none) use the 2-arg form. `qa_check.py` tolerates an absent position path either way.
 
@@ -270,8 +271,9 @@ it never states an action or size and never changes the rating (invariant 16).
 ## Options analysis (`--options` / `--options-only`)
 
 Two opt-in flags add an Unusual Whales dealer-positioning read — the **P8** pack.
-Off by default (added latency + tokens); the light Schwab P4 IV stays the
-standing options source until a run opts in.
+Off by default (added latency + tokens); after the Schwab sunset there is NO light
+options source, so a plain run emits `P4 MISSING` — options data requires
+`--options` (UW P8).
 
 **`--options` (add-on)** — single-ticker orchestrator flow:
 
@@ -280,9 +282,9 @@ standing options source until a run opts in.
    --atr <P2.atr14> [--earnings <P5 date if resolved>]`. Merge every `P8.*` fact
    (scalars AND context lists) into `10-datapack.json` + a `## P8` section of
    `10-datapack.md`; route `P8._gaps` into Data gaps and keep it in the json so
-   `render_options` echoes it in the block. On P8 success **skip
-   `schwab_options`** — P4 is suppressed; emit the Schwab IV only on a NAMED P8
-   gap, stamped `src=schwab` (D2/EC4).
+   `render_options` echoes it in the block. P8 is the SOLE options source: a P8
+   failure or a gapped P8 IV group is accepted as a named `P4`/`P8` gap — there is
+   no Schwab IV backfill after the sunset.
 2. **Stages 2–5**: agents receive P8 verbatim and may cite positioning; the
    emitted rating stays the equity Buy/Sell/Hold — options never change it.
 3. **Stage 6a**: the orchestrator runs `render_options.py 10-datapack.json >
@@ -340,7 +342,7 @@ disclose it. Insert the emitted `55-rating-block.md` into the report verbatim.
 | Non-P1 section dead after 1 retry | `MISSING(reason)`, run continues |
 | Vendor CLI nonzero exit | retry once → free-tool fallback; facts stamp real `src`; `DEGRADED(P#, reason)` in Data Gaps |
 | Tiingo cross-check FAIL or unavailable | named in Data Gaps (`CROSS-CHECK FAIL/UNAVAILABLE`); run continues; never triggers P1 fallback alone |
-| `snaptrade_account.py` exit 2 (unconfigured/auth) | fall back to `schwab_account.py`; if that also exits 2, "Your Position" omitted + noted in Data Gaps; run continues position-blind |
+| `snaptrade_account.py` exit 2 (unconfigured/auth) | "Your Position" omitted + noted in Data Gaps; run continues position-blind (the `schwab_account.py` fallback is dormant post-sunset — never auto-invoked) |
 | Position CLI exit 3 (back-dated `--asof`) | no position section (expected for back-dated runs); run continues |
 | Ticker not held (`H1.held=false`) | no position section; cold-start report unchanged |
 | qa_check hard fail ×2 | ship with QA-exceptions box quoting failures verbatim; run `--strict` for release/blocking checks so warning-class numeric issues are hard failures |
