@@ -119,10 +119,17 @@ Mission: build the strongest evidence-based short/avoid case and steelman the
 downside. Attack the bull's weakest tagged claims directly.
 Inputs: DATA PACK + analyst briefs {{analyst_briefs}} + bull case {{bull_case}}
 (the wave-1 output above, verbatim). Output ≤ 300 words. Moves in ATR14 units.
-Name the invalidation levels. Any bull claim you quote or characterize MUST
-be copied/paraphrased faithfully from {{bull_case}} — a quoted or paraphrased
-"bull argument" that does not appear in {{bull_case}} is a fabricated
-strawman, not a rebuttal, and is a hard QA defect (`qa_check.py --debate`).
+Name the invalidation levels. Any bull claim you attack MUST be faithful to
+{{bull_case}} — a "bull argument" that does not appear in {{bull_case}} is a
+fabricated strawman, not a rebuttal, and is a hard QA defect
+(`qa_check.py --debate`). QUOTE-MARK DISCIPLINE (this is what the QA check
+verifies mechanically): put quotation marks ONLY around text copied
+CHARACTER-FOR-CHARACTER from {{bull_case}} — never around your own
+paraphrase or summary of the bull's point, even a close one. When
+characterizing the bull's argument in your own words, write it with NO
+quotation marks (e.g. "the bull argues the move is sentiment-driven, not
+fundamentally justified" — no quotes) so a faithful paraphrase is never
+mistaken for a misquote.
 ```
 
 ## Risk officer
