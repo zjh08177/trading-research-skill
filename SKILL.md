@@ -29,7 +29,7 @@ artifacts are the only channel between stages.
 | 0 Scope | orchestrator | session | query | `00-scope.md` (job class, tickers, asset class; ambiguity → AskUserQuestion once) |
 | 1 Data pack | orchestrator via `scripts/vendors/*` CLIs; fallback finance skills/MCP | session | live tools | `10-datapack.md` + `.json` |
 | 1b Position | orchestrator via `scripts/vendors/snaptrade_account.py` (cross-broker; `schwab_account.py` fallback); current-day only | session | live tool | `15-position.md` + `.json` (WITHHELD from stages 2–5) |
-| 1c Left-side signals (computed) | orchestrator via `scripts/vendors/tiingo_history.py` + `scripts/{stretch,percentile,volume_climax,move_cluster,move_base_rate}.py` | — | `10-datapack.json` + full price history | P9.* facts merged into `10-datapack.json`/`.md`; raw history at `11-history.json` |
+| 1c Left-side signals (computed) | orchestrator via `scripts/vendors/tiingo_history.py` + `scripts/{stretch,percentile,volume_climax,move_cluster,move_base_rate,exhaustion}.py` (in that order — `exhaustion.py` reads P9 facts the first five already merged) | — | `10-datapack.json` + full price history | P9.* facts merged into `10-datapack.json`/`.md`; raw history at `11-history.json` |
 | 2 Analysts ×4 | Agent tool, parallel | sonnet | full pack verbatim | `20-analyst-{fund,tech,sent,meanrev}.md` |
 | 3a Bull | Agent tool | sonnet | pack + analyst briefs | `30-debate.md` (Bull case section) |
 | 3b Bear | Agent tool, runs AFTER 3a completes | sonnet | pack + analyst briefs + 3a's bull section | `30-debate.md` (Bear case section, appended) |
@@ -192,7 +192,7 @@ in `10-datapack.md`. Flag any section past its staleness threshold as `STALE`.
 | P6 | sentiment (equity: news tone; crypto: LunarCrush) | LunarCrush MCP / derived | >1 day |
 | P7 | track record | `ledger.py read --ticker X --before <as_of>` | guard is code, not prose |
 | P8 | dealer GEX + gamma regime/flip, IV rank/skew/term, max pain, OI walls, live flow (`--options` only) | `vendors/uw_options.py` (Unusual Whales); suppresses P4 on success | per-fact daily/snapshot; live facts session-gated |
-| P9 | left-side/right-side stretch (ATR+sigma multiples), RSI percentile (all + comparable-move-conditioned), volume climax, regime cluster status, forward-return base rate (raw/regime/macro sample sizes) | `stretch.py` + `percentile.py` + `volume_climax.py` + `move_cluster.py` + `move_base_rate.py` (full history via `tiingo_history.py`) | stale if `10-datapack.json` P1/P2 sections are stale |
+| P9 | left-side/right-side stretch (ATR+sigma multiples), RSI percentile (all + comparable-move-conditioned), volume climax, regime cluster status, forward-return base rate (raw/regime/macro sample sizes), exhaustion-turning-condition booleans + k/4 tally | `stretch.py` + `percentile.py` + `volume_climax.py` + `move_cluster.py` + `move_base_rate.py` + `exhaustion.py` (full history via `tiingo_history.py`) | stale if `10-datapack.json` P1/P2 sections are stale |
 
 Vendor CLIs: run `<SKILL_DIR>/.venv/bin/python scripts/vendors/<cli>.py --ticker X --asof <date>`
 (SKILL_DIR = this skill's repo root; bootstrap the venv once with `scripts/setup_venv.sh`).

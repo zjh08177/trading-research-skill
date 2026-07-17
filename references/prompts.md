@@ -155,12 +155,19 @@ risk box + track record {{judge_bundle}}.
 Rules: reason in <= 200 words citing tagged facts; moves in ATR14 units.
 State an ENTRY-PATH: which confirmation path (left-side/counter-trend vs
 right-side/trend-following) is closer to firing right now, using the
-Mean-Reversion analyst's brief and P9 facts — e.g. "left-side pending (2/4
-exhaustion-turning conditions met)", "right-side confirmed", or "n/a -
-trend-only setup" when neither a counter-trend nor a trend-confirmation
-level is near. A clustered-regime day (P9.cluster_status = "clustered")
-caps any counter-trend ENTRY-PATH at "pending" — never "confirmed" — because
-a regime ends with a process, not one day's move (see the Mean-Reversion
+Mean-Reversion analyst's brief and P9 facts. CITE [P9.exhaustion_tally]
+VERBATIM for the exhaustion-condition count — e.g. "left-side pending
+([P9.exhaustion_tally] exhaustion-turning conditions met)". NEVER count the
+4 conditions by hand and NEVER cite ATR stretch ([P9.move_atr] /
+[P9.stretch_sma50_atr]) as one of the 4 — stretch is the thesis
+PRECONDITION (the Mean-Reversion analyst's mission), not a condition; the 4
+conditions are exactly [P9.exhaustion_rsi_turn], [P9.exhaustion_vol_decay],
+[P9.exhaustion_higher_closes], and [P9.exhaustion_crashfree_window],
+already tallied for you. Use "right-side confirmed" or "n/a - trend-only
+setup" when neither a counter-trend nor a trend-confirmation level is near.
+A clustered-regime day (P9.cluster_status = "clustered") caps any
+counter-trend ENTRY-PATH at "pending" — never "confirmed" — because a
+regime ends with a process, not one day's move (see the Mean-Reversion
 card). Then output EXACTLY one final line, nothing after it, in this exact
 format:
 VERDICT: <StrongSell|Sell|Hold|Buy|StrongBuy> | CONVICTION: <1-10> | ENTRY-PATH: <free text, <=15 words> | WHY: <one sentence>
@@ -213,7 +220,13 @@ A counter-trend trigger's `action_strength` is ALWAYS `"review"`, never
 `"act"`, regardless of rating (this is enforced by `validate_level_set()` —
 a report emitting `"act"` here fails QA, not just a stylistic ask). Its
 `conditions` array must name at least 2 of the 4 exhaustion-turning
-conditions (mirrored by direction):
+conditions — Stage 1c's `exhaustion.py` already computed and tallied all 4
+for the active direction (`P9.exhaustion_direction`); cite
+[P9.exhaustion_rsi_turn], [P9.exhaustion_vol_decay],
+[P9.exhaustion_higher_closes], and [P9.exhaustion_crashfree_window] by tag
+— never re-derive them from raw RSI/volume/closes facts by hand, and never
+name ATR stretch as one of the 4 (it is the precondition, not a condition).
+For reference, what each precomputed boolean means (mirrored by direction):
   - oversold-turning-up: RSI14 turns up >=5pts from a bottom-decile
     conditional reading [P9.rsi_percentile_conditional]; volume
     climax-then-decay [P9.volume_decay_flag]; 3 consecutive higher closes
@@ -277,8 +290,8 @@ triggers are always `review`.
         "action_strength": "review",
         "rating_gate": "hold_requires_review",
         "conditions": [
-          {"metric": "P9.rsi_percentile_conditional", "rule": "RSI14 turns up >=5pts from a bottom-decile conditional reading"},
-          {"metric": "P9.volume_decay_flag", "rule": "Volume climax-then-decay confirmed"}
+          {"metric": "P9.exhaustion_rsi_turn", "rule": "RSI14 turns up >=5pts from a bottom-decile conditional reading"},
+          {"metric": "P9.exhaustion_vol_decay", "rule": "Volume climax-then-decay confirmed"}
         ],
         "decay_risk": <P9.decay_risk_daily_pct value, or omit when not leveraged>,
         "base_rate_cite": {"winrate_pct": <P9 20d winrate>, "n_raw": <P9.base_rate_n_raw>, "n_regimes": <P9.base_rate_n_regimes>, "n_macro": <P9.base_rate_n_macro>}
