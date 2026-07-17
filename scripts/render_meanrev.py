@@ -22,17 +22,20 @@ SPEC = [
     ("P9.decay_risk_daily_pct", "Leveraged decay drag", "pct_native"),
     ("P9.rsi_percentile_all", "RSI14 percentile (all-history)", "pct_native"),
     ("P9.rsi_percentile_conditional", "RSI14 percentile (comparable-move-conditioned)", "pct_native"),
+    ("P9.rsi_percentile_conditional_n", "Conditional RSI sample size", "raw"),
     ("P9.rsi_percentile_note", "RSI edge note", "label"),
     ("P9.volume_zscore", "Volume z-score", "raw"),
     ("P9.volume_climax_flag", "Volume climax", "label"),
     ("P9.volume_decay_flag", "Volume climax-then-decay", "label"),
     ("P9.cluster_status", "Regime status", "label"),
     ("P9.cluster_k", "Cluster size (comparable moves, trailing ~60 sessions)", "raw"),
+    ("P9.cluster_events_n", "Total comparable-move events (incl. today)", "raw"),
     ("P9.base_rate_n_raw", "Base-rate sample (raw occurrences)", "raw"),
     ("P9.base_rate_n_regimes", "Base-rate sample (regime-clustered)", "raw"),
     ("P9.base_rate_n_macro", "Base-rate sample (macro-cycle)", "raw"),
     ("P9.base_rate_direction", "Base-rate direction studied", "label"),
     ("P9.base_rate_threshold_pct", "Base-rate move threshold", "pct_native"),
+    ("P9.base_rate_ci_note", "Base-rate confidence-interval caveat", "label"),
 ]
 LISTS = [
     ("P9.base_rate_table", "Forward-return base rate by horizon",
@@ -65,7 +68,10 @@ def build(pack):
         fact = pack[fid]
         lines.append(f"- {label}: {_fmt(fact, mode)} [{fid}]")
     for fid, header, cols in present_lists:
-        rows = pack[fid]["v"]
+        fact = pack[fid]
+        if not fact.get("v"):
+            continue
+        rows = fact["v"]
         lines.append(f"\n**{header}** [{fid}]\n")
         lines.append("| " + " | ".join(cols) + " |")
         lines.append("|" + "---|" * len(cols))
@@ -87,7 +93,7 @@ def main(argv=None):
     try:
         block = build(pack)
     except KeyError as e:
-        sys.stderr.write(f"ERROR: render_meanrev.py: {e.args[0]}\n")
+        sys.stderr.write(f"ERROR: no P9 facts to render: {e.args[0]}\n")
         return 3
     sys.stdout.write(block)
     return 0
