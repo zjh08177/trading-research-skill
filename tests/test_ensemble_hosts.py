@@ -13,7 +13,8 @@ sys.path.insert(0, str(SCRIPTS))
 import ensemble  # noqa: E402
 
 
-def _vote(tmp, n, rating, conv, model=None, slot=None, backend=None, body="analysis line"):
+def _vote(tmp, n, rating, conv, model=None, slot=None, backend=None, body="analysis line",
+          entry_path="n/a - trend setup"):
     """Write vote-<n>.md, optionally prefixed with BACKEND/MODEL/SLOT headers."""
     head = []
     if backend:
@@ -24,7 +25,8 @@ def _vote(tmp, n, rating, conv, model=None, slot=None, backend=None, body="analy
         head.append(f"SLOT: {slot}")
     prefix = ("\n".join(head) + "\n\n") if head else ""
     (tmp / f"vote-{n}.md").write_text(
-        f"{prefix}{body}\nVERDICT: {rating} | CONVICTION: {conv} | WHY: reason {n}.\n")
+        f"{prefix}{body}\nVERDICT: {rating} | CONVICTION: {conv} | "
+        f"ENTRY-PATH: {entry_path} | WHY: reason {n}.\n")
 
 
 def _run(script, *args):
@@ -45,13 +47,13 @@ def test_header_parse_carries_model():
 def test_headerless_defaults_to_opus(tmp_path):
     _vote(tmp_path, 1, "Buy", 7)               # no headers = legacy Claude Code
     v = ensemble.parse_vote(tmp_path / "vote-1.md")
-    assert v is not None and v[4] == "claude/opus"
+    assert v is not None and v[5] == "claude/opus"
 
 
 def test_slot_is_informational_not_required(tmp_path):
     _vote(tmp_path, 1, "Hold", 5, model="composer-2.5", slot=2)
     v = ensemble.parse_vote(tmp_path / "vote-1.md")
-    assert v[0] == ensemble.NOTCH["Hold"] and v[4] == "composer-2.5"
+    assert v[0] == ensemble.NOTCH["Hold"] and v[5] == "composer-2.5"
 
 
 def test_header_only_file_is_malformed(tmp_path):
