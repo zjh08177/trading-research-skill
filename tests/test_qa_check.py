@@ -229,3 +229,38 @@ def test_main_passes_with_clean_prose_qa_artifact(tmp_path):
     prose.write_text("PROSE QA: clean")
     code = qa.main([str(report), str(pack), "--prose-qa", str(prose)])
     assert code == 0
+
+
+def test_disclosure_footer_catches_unfilled_placeholder():
+    text = ("## Disclosure\n\nActual N: 3 valid votes · Agents: {{agent_count}} · "
+            "Models: sonnet+opus · Wall clock: 120s · Token cost: $0.10.\n")
+    results = qa.check_disclosure_footer(text)
+    assert results and results[0][0] is False
+    assert "{{agent_count}}" in results[0][1]
+
+
+def test_disclosure_footer_catches_not_recorded():
+    text = ("## Disclosure\n\nActual N: 3 valid votes · Agents: 3 · "
+            "Models: not recorded · Wall clock: not recorded · Token cost: not recorded.\n")
+    results = qa.check_disclosure_footer(text)
+    assert results and any("not recorded" in msg for _, msg in results)
+
+
+def test_disclosure_footer_passes_fully_filled():
+    text = ("## Disclosure\n\nActual N: 3 valid votes · Agents: 12 · "
+            "Models: 3x opus (judges) + 1x opus (writer) + sonnet (rest) · "
+            "Wall clock: 2766.5s · Token cost: ~$0.36 (estimated).\n")
+    assert qa.check_disclosure_footer(text) == []
+
+
+def test_disclosure_footer_noop_without_section():
+    assert qa.check_disclosure_footer("no disclosure heading here") == []
+
+
+def test_main_hard_fails_on_unfilled_disclosure_footer(tmp_path):
+    report = tmp_path / "60-report.md"
+    report.write_text("## Disclosure\n\nAgents: {{agent_count}}.\n")
+    pack = tmp_path / "10-datapack.json"
+    pack.write_text("{}")
+    code = qa.main([str(report), str(pack)])
+    assert code == 1

@@ -15,7 +15,11 @@ is actually present (non-null) in the pack — a hallucinated gap, always
 hard-fail, independent of --strict.
 --prose-qa <70-qa-prose.txt> requires the file to exist and be non-blank —
 proves the sonnet prose-QA pass actually ran and persisted its output;
-missing/empty is always a hard fail, independent of --strict."""
+missing/empty is always a hard fail, independent of --strict.
+Always (no flag needed): a report's Disclosure section may never contain a
+leftover {{token}} placeholder or a bare "not recorded" — invariant 7's
+agent count/model mix/wall clock/token cost come from run_stats.py, never
+hand-guessed; always a hard fail, independent of --strict."""
 import json
 import os
 import re
@@ -51,6 +55,35 @@ CURRENT_DATA_PHRASES = (
 
 def to_float(s):
     return float(s.replace(",", "").replace("$", "").replace("%", ""))
+
+
+DISCLOSURE_SECTION_RE = re.compile(r"##\s*Disclosure\b(.*?)(?=\n##\s|\Z)", re.S | re.I)
+UNFILLED_TOKEN_RE = re.compile(r"\{\{[A-Za-z0-9_]+\}\}")
+NOT_RECORDED_RE = re.compile(r"not recorded", re.I)
+
+
+def check_disclosure_footer(text):
+    """Invariant 7: the Disclosure section's agent count / model mix / wall
+    clock / token cost must be real, script-computed values — never a
+    left-over {{token}} placeholder (Stage 7c didn't run) or a bare "not
+    recorded" cop-out (the writer guessed instead of leaving the token for
+    Stage 7c to fill). Returns list of (ok, message); [] if no Disclosure
+    section (nothing to check, e.g. a non-report artifact)."""
+    m = DISCLOSURE_SECTION_RE.search(text)
+    if not m:
+        return []
+    section = m.group(1)
+    results = []
+    for tok in UNFILLED_TOKEN_RE.finditer(section):
+        results.append((False, f"FAIL disclosure-footer: unfilled placeholder "
+                               f"{tok.group()} — Stage 7c (run_stats.py --patch) "
+                               f"did not run or did not find this token"))
+    if NOT_RECORDED_RE.search(section):
+        results.append((False, "FAIL disclosure-footer: 'not recorded' left in "
+                               "the Disclosure section — run_stats.py can compute "
+                               "agent count/model mix/wall clock from the run "
+                               "folder; this is never a legitimate gap"))
+    return results
 
 
 def check_pairs(text, pack):
@@ -391,6 +424,8 @@ def main(argv=None):
             prose_qa_errors.append(f"prose-QA artifact empty: {prose_qa_path} "
                                    f"(a clean pass still writes 'PROSE QA: clean')")
 
+    footer_errors = [msg for ok, msg in check_disclosure_footer(report) if not ok]
+
     results = check_pairs(strip_riskbox(report), pack)
     dresults, dwarnings = recompute_derived(pack)
     results += dresults
@@ -398,9 +433,9 @@ def main(argv=None):
     result_fails = [msg for ok, msg in results if not ok]
     hard_base = result_fails + warnings if strict else result_fails
     hard = (replay_errors + invariant19_errors + debate_errors + gap_errors
-            + prose_qa_errors + hard_base)
-    # cutoff/replay/invariant-19/debate-fidelity/gap-hallucination/prose-qa
-    # failures are always hard, independent of --strict
+            + prose_qa_errors + footer_errors + hard_base)
+    # cutoff/replay/invariant-19/debate-fidelity/gap-hallucination/prose-qa/
+    # disclosure-footer failures are always hard, independent of --strict
     out = ["== QA CITE CHECK =="]
     if replay_errors:
         out.append("== REPLAY GUARD ==")
@@ -417,6 +452,9 @@ def main(argv=None):
     if gap_errors:
         out.append("== DATA GAP HALLUCINATION ==")
         out += ["! " + msg for msg in gap_errors]
+    if footer_errors:
+        out.append("== DISCLOSURE FOOTER (invariant 7) ==")
+        out += ["! " + msg for msg in footer_errors]
     out += [("  " if ok else "! ") + msg for ok, msg in results]
     if warnings:
         out.append("== WARNINGS (non-fatal) ==")

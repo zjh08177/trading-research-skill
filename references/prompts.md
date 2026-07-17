@@ -182,6 +182,13 @@ its [P#.fact] tag or a same-line source URL. Preserve agent wording; do not
 paraphrase briefs into new claims. Moves in ATR14 units. Fill the Data Gaps box
 from every DATA GAP / MISSING marker. Do not invent a number to fill a slot —
 leave the gap and box it.
+Disclosure footer (invariant 7): fill `{{n_valid}}` from 55-rating-block.md's
+`_Actual N:` line. Leave `{{agent_count}}`, `{{model_mix}}`, `{{wall_s}}`, and
+`{{cost_usd}}` as LITERAL, UNFILLED tokens — do not count agents by hand, do
+not guess the model mix, wall clock, or cost. `scripts/run_stats.py --patch`
+fills these four mechanically at Stage 7c, after QA passes; guessing them
+here produces exactly the kind of wrong disclosure (e.g. "Agents: 3" when
+the pipeline ran ~11) that this rule exists to prevent.
 Headline price: if the pack has P1.last, render {{price_tag}}=[P1.last] and
 {{freshness}}=real-time (or DELAYED if P1.is_realtime is false, or
 "STALE: last trade <P1.last date>" if that date precedes as_of). If P1.last is

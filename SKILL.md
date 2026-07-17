@@ -40,6 +40,7 @@ artifacts are the only channel between stages.
 | 6b Mean-reversion block render | `scripts/render_meanrev.py` | — | `10-datapack.json` | `53-meanrev-block.md` (inserted into report VERBATIM) |
 | 6 Report | writer agent | opus | all artifacts + template + `15-position.json` | `60-report.md` |
 | 7 QA | `scripts/qa_check.py` + 1 sonnet prose pass | sonnet | report + `10-datapack.json` + `15-position.json` | `70-qa.txt` + `70-qa-prose.txt` |
+| 7c Disclosure patch (computed) | `scripts/run_stats.py --patch 60-report.md`, runs AFTER both Stage 7 checks pass | — | run folder | patches `60-report.md`'s `{{agent_count}}`/`{{model_mix}}`/`{{wall_s}}`/`{{cost_usd}}` tokens in place (invariant 7) |
 | 7b Render | `scripts/render_report.py` | — | `60-report.md` | `60-report.html` (self-contained styled page) |
 | 8 Publish + ledger | orchestrator + `scripts/ledger.py` + Artifact | — | report | HTML Artifact + vault copy (`.md`+`.html`) + ledger row |
 
@@ -153,7 +154,7 @@ call.
 | 4 | Numbers in the report carry `[P#.fact]` tags or a URL; untagged numbers fail QA. | `qa_check.py` vs `datapack.json` |
 | 5 | Dead data source → named `MISSING(reason)` section + Data Gaps box; dead P1 → abstain report + `no_call` ledger row. Never silent. A DATA GAP/MISSING claim naming a fact the pack actually has a value for is a hallucination, not a legitimate gap. | pack contract + failure map; `qa_check.py --brief`/report scan hard-fails a hallucinated gap |
 | 6 | Move/level language states ATR14 multiples before any escalation word. | prompts.md role cards + QA prose pass |
-| 7 | Footer discloses: actual N, agent count, model mix, wall clock, token cost. Thin ensemble (<3 valid votes) is never presented as N≥3. | run-stats collection + template slot |
+| 7 | Footer discloses: actual N, agent count, model mix, wall clock, token cost. Thin ensemble (<3 valid votes) is never presented as N≥3. | `scripts/run_stats.py --patch` (Stage 7c) computes and fills all 4 non-N fields mechanically from the artifacts actually present — the writer leaves them as literal unfilled tokens, never hand-counts; `qa_check.py` hard-fails an unfilled `{{...}}` token or a bare "not recorded" left in the Disclosure section |
 | 8 | Escalation (spread ≥2 at N=3 → N=5) always runs; R7 overrun is disclosed, never skipped. | `ensemble.py` decision output |
 | 9 | Spread ≥3 at N=5 → headline `NO-CALL`, distribution still published + ledger-logged. | `ensemble.py` |
 | 10 | P1–P5 fill from the named vendor CLIs; every fallback-filled fact stamps its real `src` and the section is boxed `DEGRADED(P#, reason)` in Data Gaps. P1 carries a tiingo cross-check stamp: same-asof-date closes within 0.5% → CROSS-CHECK OK, else CROSS-CHECK FAIL named in Data Gaps (run continues). | CLIs exit nonzero and never fabricate; orchestrator stamps src + gaps |
@@ -236,6 +237,14 @@ at all), same fail-closed posture as `qa_check.py`'s own exit code; stop
 and re-run the prose pass rather than proceeding to 7b/8 without it. A
 clean pass still writes the file — its content is the literal string
 "PROSE QA: clean", never an empty file.
+
+**Stage 7c** (only after `qa_check.py` exits 0 AND the prose pass is clean):
+run `scripts/run_stats.py <run_dir> --patch 60-report.md` — this fills the
+Disclosure section's `{{agent_count}}`/`{{model_mix}}`/`{{wall_s}}`/
+`{{cost_usd}}` tokens in place from the artifacts that now all exist. Then
+re-run `qa_check.py` once more (same flags) to confirm the patched report
+still passes — the patch only replaces literal placeholder tokens, never
+touches tagged numbers, so this should be a no-op pass, not a new failure.
 
 ## Ledger
 
