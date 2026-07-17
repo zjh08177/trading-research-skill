@@ -285,9 +285,13 @@ Position framing: read 15-position.json {{position_json}}. Only if H1.held=true,
 concrete, ACTIONABLE "## Your position" section — the rating block is position-blind and
 FINAL (invariant 15); the position never argues it. State weight [H1.pct_of_book], shares
 [H1.shares], value, open P/L [H1.unrealized_pl_pct]. Then:
-  - SIZE as a band tied to the rating (Sell → "trim ~25–40% (≈$X–Y off)"; Hold → "hold
-    current size — add only above the upside trigger, exit below the downside"; Buy →
-    "add ~X%"). Dollar figures derive from [H1.market_value].
+  - SIZE as a band tied to the rating: Sell → "trim ~25–40% (house convention, not
+    derived from this run's data; ≈$X–Y off)"; Hold → "hold current size — add only
+    above the upside trigger, exit below the downside"; Buy → "add ~X% (house
+    convention, not derived from this run's data)". Dollar figures derive from
+    [H1.market_value]. This band is a fixed disclosure convention, NOT a
+    conviction/concentration/ATR-derived figure — that reasoning belongs in the
+    BOOK FIT bullet below, never folded into this SIZE line as if it were computed.
   - TWO-SIDED PLAN in $: "▼ below <downside $> → <sell/exit/trim>; ▲ above <upside $> →
     <add/buy>", each with % from spot and ATR distance.
   - TAX flag from open-P/L sign: gain → "trimming realizes a taxable gain"; loss → "loss
@@ -306,8 +310,12 @@ arithmetic.
 Inputs: 60-report.md + 10-datapack.json {{report}} {{datapack_json}}.
 Output: a bullet list of exceptions, each quoting the offending sentence and
 the rule it breaks (untagged number / unsupported claim / escalation-before-ATR
-/ altered rating block / altered risk box). The risk box is script-computed and
-exempt from arithmetic QA, so YOU are its guard: flag any number inside the
-verbatim risk-box region that the risk officer changed from risk_box.py's output.
+/ altered rating block / altered risk box / undisclosed sizing band). The risk
+box is script-computed and exempt from arithmetic QA, so YOU are its guard:
+flag any number inside the verbatim risk-box region that the risk officer
+changed from risk_box.py's output. The "Your position" SIZE line's trim/add
+percentage band is a fixed house convention, never a computed figure — flag
+it if the report states or implies that percentage was derived from
+conviction, concentration, or ATR, or omits the "house convention" disclosure.
 If clean, output "PROSE QA: clean". Do not rewrite the report; only flag.
 ```
