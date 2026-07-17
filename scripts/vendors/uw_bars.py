@@ -109,21 +109,48 @@ def fetch_frame(ticker, asof):
     reg = [r for r in rows if r.get("market_time") == "r"]
     if not reg:
         uw.die("UW returned no regular-session bars for %s" % ticker, 3)
-    frame = pd.DataFrame(
-        [
-            {
-                "Date": r["date"],
-                "Open": float(r["open"]),
-                "High": float(r["high"]),
-                "Low": float(r["low"]),
-                "Close": float(r["close"]),
-                # Regular-row `volume` is the consolidated full-day volume.
-                "Volume": float(r.get("volume") or 0),
-            }
-            for r in reg
-        ]
-    )
+    reg = _drop_forming_last_bar(reg, rows)
+    if not reg:
+        uw.die("UW returned no settled regular-session bars for %s" % ticker, 3)
+    frame = pd.DataFrame([_row_to_bar(r, ticker) for r in reg])
     return frame.sort_values("Date").reset_index(drop=True)
+
+
+def _drop_forming_last_bar(reg, rows):
+    """Exclude the current day's still-forming regular candle.
+
+    A daily-bar endpoint exposes today's regular candle mid-session as an
+    in-progress bar; treating it as settled would corrupt P1.price/chg% and every
+    P2 indicator during market hours. UW splits each date into pr/po/r rows and a
+    postmarket (`po`) row only appears once the regular session has closed, so a
+    date WITHOUT a `po` sibling is not yet settled. Applied only to the newest
+    regular date (the sole bar that can still be forming) so a rare `po`-less
+    historical day is never dropped. Clock-free by design (the codebase avoids
+    weekday/holiday math)."""
+    po_dates = {r.get("date") for r in rows if r.get("market_time") == "po"}
+    latest = max(r["date"] for r in reg)
+    if latest not in po_dates:
+        return [r for r in reg if r["date"] != latest]
+    return reg
+
+
+def _row_to_bar(r, ticker):
+    # A present-but-null `volume` is a malformed row — fail loud rather than
+    # fabricate a 0-volume observation (which would understate avg_vol_20d and
+    # P0 relative volume). A genuine 0 (e.g. a halted day) is preserved.
+    vol = r.get("volume")
+    if vol is None:
+        uw.die("UW ohlc row for %s missing volume on %s" % (ticker, r.get("date")), 1)
+    return {
+        "Date": r["date"],
+        "Open": float(r["open"]),
+        "High": float(r["high"]),
+        "Low": float(r["low"]),
+        "Close": float(r["close"]),
+        # Regular-row `volume` is the regular-session consolidated volume
+        # (matches Schwab's needExtendedHoursData=False; postmarket is the `po` row).
+        "Volume": float(vol),
+    }
 
 
 def main(argv):

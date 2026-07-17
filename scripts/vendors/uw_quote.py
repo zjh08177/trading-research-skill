@@ -30,7 +30,12 @@ SRC = "uw"
 def build_facts(state):
     """P1 current-price facts from a stock-state dict. Day range/volume omitted
     (never null) when a field is absent. ``asof`` is the vendor tape time."""
-    asof = state.get("tape_time") or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    # The as-of MUST be the vendor's real tape time, never now(): fabricating it
+    # would make a stale response look freshly quoted and defeat the STALE/DELAYED
+    # boxing in invariant 11. A response with no tape_time is malformed -> fail.
+    asof = state.get("tape_time")
+    if not asof:
+        uw.die("UW stock-state has no tape_time (cannot stamp a real quote time)", 3)
 
     def num(key):
         try:

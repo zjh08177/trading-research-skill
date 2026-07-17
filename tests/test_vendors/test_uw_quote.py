@@ -44,6 +44,13 @@ def test_missing_close_exits_3(monkeypatch):
     assert e.value.code == 3
 
 
+def test_missing_tape_time_fails_loud_not_now(monkeypatch):
+    # No tape_time -> must fail (exit 3), never fabricate now() as the quote time.
+    with pytest.raises(SystemExit) as e:
+        uw_quote.build_facts({"close": "334.83"})
+    assert e.value.code == 3
+
+
 def test_past_asof_rejected(monkeypatch):
     patch(monkeypatch, STATE)
     with pytest.raises(SystemExit) as e:

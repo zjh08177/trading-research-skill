@@ -94,6 +94,36 @@ def test_auth_and_ratelimit_exit_codes(monkeypatch):
     assert e.value.code == 4
 
 
+def test_forming_current_bar_dropped(monkeypatch):
+    # The newest regular date without a `po` sibling is a still-forming intraday
+    # candle -> excluded so it never leaks as a settled bar. Older po-less rows
+    # are untouched (guard only targets the max date).
+    rows = make_ohlc(30, end="2026-06-29")            # all settled (pr/po/r each)
+    rows.append({"date": "2026-06-30", "market_time": "r", "open": 9, "high": 9,
+                 "low": 9, "close": 999.0, "volume": 123})  # forming: r, no po
+    patch(monkeypatch, rows)
+    facts = uw_bars.build_facts(uw_bars.fetch_frame("AAPL", "2026-06-30"), "2026-06-30", "AAPL")
+    # 999.0 forming close must NOT become P1.price; last settled is 2026-06-29.
+    assert facts["P1.price"]["asof"] == "2026-06-29"
+    assert facts["P1.price"]["v"] != 999.0
+
+
+def test_settled_last_bar_with_po_kept(monkeypatch):
+    rows = make_ohlc(30, end="2026-06-30")            # 06-30 has a po row -> settled
+    patch(monkeypatch, rows)
+    facts = uw_bars.build_facts(uw_bars.fetch_frame("AAPL", "2026-06-30"), "2026-06-30", "AAPL")
+    assert facts["P1.price"]["asof"] == "2026-06-30"
+
+
+def test_null_volume_fails_loud(monkeypatch):
+    rows = make_ohlc(30)
+    rows[-1]["volume"] = None                          # malformed regular row
+    patch(monkeypatch, rows)
+    with pytest.raises(SystemExit) as e:
+        uw_bars.fetch_frame("AAPL", "2026-06-30")
+    assert e.value.code == 1
+
+
 def test_build_facts_all_before_asof_returns_none():
     import pandas as pd
     df = pd.DataFrame([{"Date": "2026-07-05", "Open": 1.0, "High": 1.0,
