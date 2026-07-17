@@ -94,6 +94,13 @@ strike/expiry to trade. Omit the whole section when the run did not fetch P8.
 <!-- options-block: inserted verbatim, do not edit -->
 {{52-options-block.md inserted here verbatim from render_options.py — do not edit}}
 
+## Mean-Reversion / Exhaustion
+
+<!-- writer: insert 53-meanrev-block.md VERBATIM here, unedited. Omit this
+     whole section only if 53-meanrev-block.md does not exist (pipeline bug
+     — this analyst is always-on, so its absence should be rare and must be
+     named in Data Gaps, never silently dropped). -->
+
 ## Data gaps
 
 Box every DATA GAP and MISSING(reason) marker. State what is missing and whether

@@ -11,7 +11,9 @@ import os
 import re
 import sys
 
+import levels_schema
 import replay
+import render_report as _render_report_mod
 
 CHECK_SECTIONS = ("rating", "thesis", "risk", "position")
 TAG = r"\[[PH]\d+\.[A-Za-z0-9_]+\]"
@@ -248,6 +250,15 @@ def main(argv=None):
     # An absent position file is normal (flat / back-dated / auth-fail runs write none):
     # skip the merge, never crash — a stray [H#] tag then fails as "no pack entry".
 
+    invariant19_errors = []
+    rating = _render_report_mod._rating_from_md(report)
+    try:
+        level_set = _render_report_mod.parse_levels_marker(report, pack, rating)
+        if level_set:
+            levels_schema.validate_level_set(level_set, pack, rating)
+    except levels_schema.LevelValidationError as e:
+        invariant19_errors.append(f"INVARIANT-19 {e}")
+
     replay_errors = []
     if replay_mode:
         try:
@@ -265,11 +276,15 @@ def main(argv=None):
     warnings = scan_untagged(report) + dwarnings
     result_fails = [msg for ok, msg in results if not ok]
     hard_base = result_fails + warnings if strict else result_fails
-    hard = replay_errors + hard_base  # cutoff/replay failures are always hard, independent of --strict
+    hard = replay_errors + invariant19_errors + hard_base  # cutoff/replay/invariant-19 failures
+    # are always hard, independent of --strict
     out = ["== QA CITE CHECK =="]
     if replay_errors:
         out.append("== REPLAY GUARD ==")
         out += ["! " + msg for msg in replay_errors]
+    if invariant19_errors:
+        out.append("== INVARIANT 19 (counter-trend triggers) ==")
+        out += ["! " + msg for msg in invariant19_errors]
     out += [("  " if ok else "! ") + msg for ok, msg in results]
     if warnings:
         out.append("== WARNINGS (non-fatal) ==")

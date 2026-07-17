@@ -29,12 +29,14 @@ artifacts are the only channel between stages.
 | 0 Scope | orchestrator | session | query | `00-scope.md` (job class, tickers, asset class; ambiguity → AskUserQuestion once) |
 | 1 Data pack | orchestrator via `scripts/vendors/*` CLIs; fallback finance skills/MCP | session | live tools | `10-datapack.md` + `.json` |
 | 1b Position | orchestrator via `scripts/vendors/snaptrade_account.py` (cross-broker; SnapTrade-only — `schwab_account.py` fallback is dormant post-sunset); current-day only | session | live tool | `15-position.md` + `.json` (WITHHELD from stages 2–5) |
-| 2 Analysts ×3 | Agent tool, parallel | sonnet | full pack verbatim | `20-analyst-{fund,tech,sent}.md` |
+| 1c Left-side signals (computed) | orchestrator via `scripts/vendors/tiingo_history.py` + `scripts/{stretch,percentile,volume_climax,move_cluster,move_base_rate}.py` | — | `10-datapack.json` + full price history | P9.* facts merged into `10-datapack.json`/`.md`; raw history at `11-history.json` |
+| 2 Analysts ×4 | Agent tool, parallel | sonnet | full pack verbatim | `20-analyst-{fund,tech,sent,meanrev}.md` |
 | 3 Debate | bull + bear agents, parallel, 2 waves | sonnet | pack + analyst briefs | `30-debate.md` |
 | 4a Risk box (computed) | `scripts/risk_box.py` | — | `10-datapack.json` | `40-riskbox-block.md` (inserted into report VERBATIM) |
 | 4b Risk narrative | risk-officer agent | sonnet | pack + debate + `40-riskbox-block.md` | `40-risk.md` (leads with the verbatim block, then narration) |
 | 5 Ensemble | N judge agents, parallel, byte-identical inputs | opus | pack + briefs + debate + `40-risk.md` (leads with the verbatim risk box) + guarded track record | `50-votes/vote-{1..N}.md` |
 | 5b Tally | `scripts/ensemble.py` | — | votes | `55-rating-block.md` (inserted into report VERBATIM) |
+| 6b Mean-reversion block render | `scripts/render_meanrev.py` | — | `10-datapack.json` | `53-meanrev-block.md` (inserted into report VERBATIM) |
 | 6 Report | writer agent | opus | all artifacts + template + `15-position.json` | `60-report.md` |
 | 7 QA | `scripts/qa_check.py` + 1 sonnet prose pass | sonnet | report + `10-datapack.json` + `15-position.json` | `70-qa.txt` |
 | 7b Render | `scripts/render_report.py` | — | `60-report.md` | `60-report.html` (self-contained styled page) |
@@ -138,7 +140,9 @@ corpus and labels calibration dormant until the resolved sidecar exists.
 
 ## Invariants
 
-Enforce all seventeen. Any violation is a defect, not a judgment call.
+Enforce all eighteen (rows 1–17 plus 19; the Cursor-host addendum below is a
+separate, additive "Invariant 18"). Any violation is a defect, not a judgment
+call.
 
 | # | Rule | Enforced by |
 |---|---|---|
@@ -159,6 +163,7 @@ Enforce all seventeen. Any violation is a defect, not a judgment call.
 | 15 | The position never changes the headline call — only the action framing around it. A "Your Position" section that argues the rating is a defect. | writer role card; QA prose pass |
 | 16 | The risk box's adverse-move, invalidation, and context numbers come only from `risk_box.py`, inserted verbatim as `40-riskbox-block.md`; the risk officer narrates around it and never recomputes them. The block is context-only — never an action/size, never changes the rating. | `risk_box.py` emits the block; officer card forbids recompute; `qa_check.py` exempts the verbatim region |
 | 17 | Decision levels preserve execution qualifiers. Reports emit schema-v2 `LEVELS_JSON` with comparison, action strength, rating gate, and confirmation conditions. A crossed level is never automatically an execution instruction: Hold-rated directional triggers are review-only, legacy `LEVELS:` is upgraded to safe review-first semantics, and action-plan rows use `ACT` only for `confirmed_act`. | `levels_schema.py`; `render_report.py`; `monitor_invalidations.py`; `action_plan.py`; `portfolio_delta.py`; `qa_check.py --strict` |
+| 19 | A counter-trend trigger (side opposing the dominant direction — a downside-Buy or upside-Sell/Trim) is never `action_strength="act"`, for any rating. A leveraged product's (`P0.leverage_objective` present) counter-trend trigger always carries a computed `decay_risk`. A `base_rate_cite` never appears without its `n_raw`/`n_regimes`/`n_macro` companions. | `levels_schema.validate_level_set()`; hard-fails `qa_check.py` and `render_report.py` (never a warning, never convention-only) |
 
 ## Byte-identical inputs and no paraphrase
 
@@ -185,6 +190,7 @@ in `10-datapack.md`. Flag any section past its staleness threshold as `STALE`.
 | P6 | sentiment (equity: news tone; crypto: LunarCrush) | LunarCrush MCP / derived | >1 day |
 | P7 | track record | `ledger.py read --ticker X --before <as_of>` | guard is code, not prose |
 | P8 | dealer GEX + gamma regime/flip, IV rank/skew/term, max pain, OI walls, live flow (`--options` only) | `vendors/uw_options.py` (Unusual Whales); suppresses P4 on success | per-fact daily/snapshot; live facts session-gated |
+| P9 | left-side/right-side stretch (ATR+sigma multiples), RSI percentile (all + comparable-move-conditioned), volume climax, regime cluster status, forward-return base rate (raw/regime/macro sample sizes) | `stretch.py` + `percentile.py` + `volume_climax.py` + `move_cluster.py` + `move_base_rate.py` (full history via `tiingo_history.py`) | stale if `10-datapack.json` P1/P2 sections are stale |
 
 Vendor CLIs: run `<SKILL_DIR>/.venv/bin/python scripts/vendors/<cli>.py --ticker X --asof <date>`
 (SKILL_DIR = this skill's repo root; bootstrap the venv once with `scripts/setup_venv.sh`).
@@ -348,6 +354,8 @@ disclose it. Insert the emitted `55-rating-block.md` into the report verbatim.
 | qa_check hard fail ×2 | ship with QA-exceptions box quoting failures verbatim; run `--strict` for release/blocking checks so warning-class numeric issues are hard failures |
 | ledger append fails | print row in chat; never skip silently |
 | Wall clock > 15 min | finish + disclose overrun (never abort for time) |
+| Any P9 script (`stretch.py`/`percentile.py`/`volume_climax.py`/`move_cluster.py`/`move_base_rate.py`) exits nonzero | `MISSING(P9, reason)` in Data Gaps; Mean-Reversion analyst section notes DATA GAP; run continues |
+| ENTRY-PATH missing/malformed on a judge vote | same malformed-vote handling as a missing VERDICT line (respawn once, then drop + disclose N) |
 
 ## Model tiers
 

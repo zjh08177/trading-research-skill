@@ -213,6 +213,57 @@ def evaluate_level_set(entry, price=None, rating=None, market=None, near_pct=NEA
     return events
 
 
+class LevelValidationError(ValueError):
+    """Raised by validate_level_set() on any Invariant-19-class violation."""
+
+
+def _is_counter_trend(trigger, rating):
+    """A counter-trend trigger opposes the dominant direction implied by the
+    rating: a downside+Buy or upside+Sell/Trim is ALWAYS counter-trend,
+    independent of rating (unlike the runtime action_strength default, which
+    only special-cases Hold). A trend-aligned combo (upside+Buy, downside+Sell)
+    is never counter-trend regardless of rating."""
+    d = action_direction(trigger.get("intended_action") or trigger.get("action"))
+    side = trigger.get("side")
+    if d == 1 and side == "downside":
+        return True
+    if d == -1 and side == "upside":
+        return True
+    return False
+
+
+def validate_level_set(level_set, pack=None, rating=None):
+    """Hard-reject a levels JSON that violates Invariant 19. Raises
+    LevelValidationError with a descriptive message; returns None when clean.
+    Called by qa_check.py (hard QA failure) and render_report.py (fail loud)
+    before either ever ships a level set — this is the rejection path
+    levels_schema.py never had before this feature (normalize_level_set()
+    only ever normalizes/defaults, it never raises)."""
+    pack = pack or {}
+    rating = rating_label(rating) if not isinstance(rating, str) else rating
+    has_leverage = any(k.startswith("P0.leverage_objective") for k in pack)
+    for t in (level_set or {}).get("triggers", []) or []:
+        if _is_counter_trend(t, rating):
+            if t.get("action_strength") == "act":
+                raise LevelValidationError(
+                    f"counter-trend trigger (side={t.get('side')!r}, "
+                    f"action={t.get('intended_action')!r}) is marked "
+                    f"action_strength='act' — counter-trend triggers must "
+                    f"always be 'review' (Invariant 19), rating={rating!r}")
+            if has_leverage and t.get("decay_risk") is None:
+                raise LevelValidationError(
+                    f"counter-trend trigger on a leveraged product "
+                    f"(P0.leverage_objective present) is missing a computed "
+                    f"decay_risk field (Invariant 19)")
+        cite = t.get("base_rate_cite")
+        if cite is not None:
+            need = {"n_raw", "n_regimes", "n_macro"}
+            if not need.issubset(cite):
+                raise LevelValidationError(
+                    f"base_rate_cite is missing required n_raw/n_regimes/"
+                    f"n_macro companions: has {sorted(cite)}")
+
+
 def _event(trigger, state, price, missing, fired):
     action = trigger.get("intended_action") or trigger.get("action", "")
     event = {

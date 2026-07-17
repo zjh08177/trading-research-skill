@@ -22,8 +22,9 @@ def _votes(tmp, specs):
             p.write_text(spec + "\n")
         else:
             r, c = spec
-            p.write_text(f"analysis line\nVERDICT: {r} | CONVICTION: {c} "
-                         f"| WHY: reason {i} in one sentence.\n")
+            p.write_text(f"analysis line\nVERDICT: {r} | CONVICTION: {c} | "
+                         f"ENTRY-PATH: n/a - trend setup | WHY: reason {i} "
+                         f"in one sentence.\n")
     return tmp
 
 
@@ -109,6 +110,51 @@ def test_unanimous_all_aggregates_equal_mode(tmp_path):
     assert dec["median_notch"] == 4.0 and dec["mean_notch"] == 4.0
     ct = [ln for ln in block.splitlines() if ln.startswith("Central tendency:")][0]
     assert "mode Buy" in ct and "median Buy" in ct
+
+
+def _votes_v2(tmp, specs):
+    """specs: list of (rating, conviction, entry_path) or a raw malformed string."""
+    for i, spec in enumerate(specs, 1):
+        p = tmp / f"vote-{i}.md"
+        if isinstance(spec, str):
+            p.write_text(spec + "\n")
+        else:
+            r, c, ep = spec
+            p.write_text(
+                f"analysis line\nVERDICT: {r} | CONVICTION: {c} | "
+                f"ENTRY-PATH: {ep} | WHY: reason {i} in one sentence.\n")
+    return tmp
+
+
+def test_parse_vote_reads_entry_path(tmp_path):
+    _votes_v2(tmp_path, [("Hold", 6, "left-side pending (2/4 conditions met)")])
+    parsed = ensemble.parse_vote(tmp_path / "vote-1.md")
+    assert parsed is not None
+    notch, conv, entry_path, why, verbatim, model = parsed
+    assert entry_path == "left-side pending (2/4 conditions met)"
+    assert notch == 3 and conv == 6
+
+
+def test_parse_vote_missing_entry_path_is_malformed(tmp_path):
+    # A 3-field legacy-shaped line (no ENTRY-PATH) must be treated as
+    # malformed, never silently accepted as a degraded 3-field vote.
+    p = tmp_path / "vote-1.md"
+    p.write_text("VERDICT: Hold | CONVICTION: 6 | WHY: legacy shape, no entry path.\n")
+    assert ensemble.parse_vote(p) is None
+
+
+def test_render_lists_entry_path_per_vote(tmp_path):
+    _votes_v2(tmp_path, [
+        ("Hold", 6, "left-side pending (2/4 conditions met)"),
+        ("Hold", 5, "n/a - trend setup"),
+        ("Hold", 7, "right-side confirmed"),
+    ])
+    votes, malformed = ensemble.collect(tmp_path)
+    assert not malformed
+    block, decision = ensemble.render(votes, malformed, 3)
+    assert "left-side pending (2/4 conditions met)" in block
+    assert "n/a - trend setup" in block
+    assert "right-side confirmed" in block
 
 
 # ---------- ledger ----------

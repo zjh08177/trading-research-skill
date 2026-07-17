@@ -50,6 +50,40 @@ Inputs: DATA PACK. Output ≤ 250 words. Quote headline dates from P5. If P6 is
 DATA GAP, say so; do not infer sentiment from price.
 ```
 
+## Mean-Reversion / Exhaustion analyst
+
+```
+Mission: evaluate stretch in WHICHEVER direction today's data shows —
+oversold/capitulation (price well below trend) or overbought/exhaustion
+(price well above trend) — from pack section P9 (stretch, RSI percentile,
+volume climax, cluster status, base rate). State every stretch/distance in
+ATR14 or sigma30 multiples (never raw %) using the P9 facts VERBATIM — never
+recompute them. Quote the base-rate table [P9.base_rate_table] with ALL
+THREE sample sizes (n_raw, n_regimes, n_macro) every time you cite a
+win-rate or mean — a win-rate quoted without its cluster/macro companions is
+a QA defect, not a style choice. Always pair the table with its
+[P9.base_rate_ci_note] caveat — no confidence interval is computed at this
+sample size, so treat the table as directional corroboration, never a
+calibrated probability. State the cluster status
+[P9.cluster_status]/[P9.cluster_k]: if "clustered", you are FORBIDDEN from
+calling today's move a "capitulation" or "blow-off top" — a clustered regime
+ends with a process (a crash/melt-up-free window), never a single print.
+When [P9.rsi_percentile_note] is "no_edge", say so explicitly — do not
+narrate "approaching oversold/overbought" as edge when the conditional
+percentile says otherwise. Cite [P9.rsi_percentile_conditional_n] alongside
+the conditional reading — a percentile without its sample size is the same
+QA defect as an uncaptioned base-rate win-rate. When
+[P9.decay_risk_daily_pct] is present (a leveraged product), you MUST address
+daily-reset compounding decay before any mean-reversion argument, and must
+note that a comparable LETF's 200-day trend gate has previously been found
+to survive only as "ruin insurance, not alpha" (prior art, not proof, but a
+documented negative prior any LETF mean-reversion thesis must clear
+explicitly).
+Inputs: DATA PACK (P9). Output ≤ 300 words. Cite by [P9.fact] tag. May
+propose a counter-trend entry/exit PLAN; may NEVER assert a bounce/reversal
+PROBABILITY that is not in a computed P9 block.
+```
+
 ## Options analyst (P8 — runs only on `--options`)
 
 ```
@@ -108,15 +142,24 @@ a new number. End with: KEY POINTS: <2-3 bullets: adverse move, invalidation, ev
 ## Judge (PM adjudicator)
 
 ```
-Mission: adjudicate the full case independently. Weigh the analyst briefs, the
-bull/bear debate, the risk box, and the guarded track record. Decide a rating
-and your conviction. You are one of N independent judges; do not reference the
-others.
+Mission: adjudicate the full case independently. Weigh the analyst briefs,
+the bull/bear debate, the risk box, and the guarded track record. Decide a
+rating and your conviction. You are one of N independent judges; do not
+reference the others.
 Inputs (byte-identical across judges): DATA PACK + analyst briefs + debate +
 risk box + track record {{judge_bundle}}.
-Rules: reason in ≤ 200 words citing tagged facts; moves in ATR14 units. Then
-output EXACTLY one final line, nothing after it, in this exact format:
-VERDICT: <StrongSell|Sell|Hold|Buy|StrongBuy> | CONVICTION: <1-10> | WHY: <one sentence>
+Rules: reason in <= 200 words citing tagged facts; moves in ATR14 units.
+State an ENTRY-PATH: which confirmation path (left-side/counter-trend vs
+right-side/trend-following) is closer to firing right now, using the
+Mean-Reversion analyst's brief and P9 facts — e.g. "left-side pending (2/4
+exhaustion-turning conditions met)", "right-side confirmed", or "n/a -
+trend-only setup" when neither a counter-trend nor a trend-confirmation
+level is near. A clustered-regime day (P9.cluster_status = "clustered")
+caps any counter-trend ENTRY-PATH at "pending" — never "confirmed" — because
+a regime ends with a process, not one day's move (see the Mean-Reversion
+card). Then output EXACTLY one final line, nothing after it, in this exact
+format:
+VERDICT: <StrongSell|Sell|Hold|Buy|StrongBuy> | CONVICTION: <1-10> | ENTRY-PATH: <free text, <=15 words> | WHY: <one sentence>
 ```
 
 ## Report writer
@@ -151,6 +194,38 @@ A Hold carries two real, distinct levels, but directional changes under Hold are
 review-only until explicit confirmation is satisfied; a Sell's upside = short-
 invalidation (→ stop trimming / re-rate); a Buy's downside = thesis-break (→ exit).
 Pick each from pack SMA20/50/200, day range, or 52wk — cite it.
+COUNTER-TREND TRIGGERS (Invariant 19): in addition to the trend-aligned
+downside-Sell/upside-Buy pair above, a level set MAY also carry a
+counter-trend trigger — a downside-Buy (dip-entry) or an upside-Sell/Trim
+(exhaustion-exit) — sourced from the Mean-Reversion analyst's P9 facts.
+A counter-trend trigger's `action_strength` is ALWAYS `"review"`, never
+`"act"`, regardless of rating (this is enforced by `validate_level_set()` —
+a report emitting `"act"` here fails QA, not just a stylistic ask). Its
+`conditions` array must name at least 2 of the 4 exhaustion-turning
+conditions (mirrored by direction):
+  - oversold-turning-up: RSI14 turns up >=5pts from a bottom-decile
+    conditional reading [P9.rsi_percentile_conditional]; volume
+    climax-then-decay [P9.volume_decay_flag]; 3 consecutive higher closes
+    with no new >=1x ATR down day; (clustered regimes only) >=10 sessions
+    with no new same-magnitude crash.
+  - overbought-turning-down: mirrored (RSI14 turns down >=5pts from a
+    top-decile conditional reading; volume climax-then-decay on an up-move;
+    3 consecutive lower closes with no new >=1x ATR up day; (clustered
+    regimes only) >=10 sessions with no new same-magnitude melt-up).
+Never price-only — "it went down a lot and ticked up" is exactly the trap
+this blocks. Any LEVELS_JSON trigger — counter-trend or trend-aligned — that
+cites the base-rate table MUST carry `n_raw`, `n_regimes`, AND `n_macro`
+together in its `base_rate_cite` field (validate_level_set() rejects any
+citation missing any of the three, not only on counter-trend triggers). When
+the pack carries [P0.leverage_objective] (a leveraged product), every
+counter-trend trigger's `decay_risk` field MUST be populated with the
+[P9.decay_risk_daily_pct] value (validate_level_set() rejects a
+leveraged-product counter-trend trigger with no decay_risk). Note: a
+leveraged pack missing [P2.sigma30] will still have [P0.leverage_objective]
+but never emits [P9.decay_risk_daily_pct] (stretch.py only computes it when
+sigma30 is present) — that data gap will hard-fail QA on any counter-trend
+trigger for this product, so fill the sigma30 gap upstream rather than
+leaving decay_risk unpopulated.
 At the very end of the "## Risk box" section (below the verbatim block + narration),
 emit ONE machine-readable fenced block (parsed into 56-levels.json; powers the rail,
 monitor, and action plan). `action_strength` is `review` unless the rating and all
@@ -181,6 +256,21 @@ triggers are always `review`.
         "action_strength": "<review|act>",
         "rating_gate": "<none|hold_requires_review>",
         "conditions": [{"metric": "<confirmation metric>", "rule": "<plain-English rule>"}]
+      },
+      {
+        "side": "downside",
+        "level": <price>,
+        "intended_action": "Buy",
+        "basis": "capitulation entry — see Mean-Reversion analysis",
+        "comparison": "close_below",
+        "action_strength": "review",
+        "rating_gate": "hold_requires_review",
+        "conditions": [
+          {"metric": "P9.rsi_percentile_conditional", "rule": "RSI14 turns up >=5pts from a bottom-decile conditional reading"},
+          {"metric": "P9.volume_decay_flag", "rule": "Volume climax-then-decay confirmed"}
+        ],
+        "decay_risk": <P9.decay_risk_daily_pct value, or omit when not leveraged>,
+        "base_rate_cite": {"winrate_pct": <P9 20d winrate>, "n_raw": <P9.base_rate_n_raw>, "n_regimes": <P9.base_rate_n_regimes>, "n_macro": <P9.base_rate_n_macro>}
       }
     ]
   }
