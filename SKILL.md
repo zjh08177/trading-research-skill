@@ -157,8 +157,8 @@ call.
 | 7 | Footer discloses: actual N, agent count, model mix, wall clock, token cost. Thin ensemble (<3 valid votes) is never presented as N≥3. | `scripts/run_stats.py --patch` (Stage 7c) computes and fills all 4 non-N fields mechanically from the artifacts actually present — the writer leaves them as literal unfilled tokens, never hand-counts; `qa_check.py` hard-fails an unfilled `{{...}}` token or a bare "not recorded" left in the Disclosure section |
 | 8 | Escalation (spread ≥2 at N=3 → N=5) always runs; R7 overrun is disclosed, never skipped. | `ensemble.py` decision output |
 | 9 | Spread ≥3 at N=5 → headline `NO-CALL`, distribution still published + ledger-logged. | `ensemble.py` |
-| 10 | P1–P5 fill from the named vendor CLIs; every fallback-filled fact stamps its real `src` and the section is boxed `DEGRADED(P#, reason)` in Data Gaps. P1 carries a tiingo cross-check stamp: same-asof-date closes within 0.5% → CROSS-CHECK OK, else CROSS-CHECK FAIL named in Data Gaps (run continues). | CLIs exit nonzero and never fabricate; orchestrator stamps src + gaps |
-| 11 | Current-day runs use `schwab_quote.py` `P1.last` (real trade-time) as the price headline; box it `DELAYED` when `P1.is_realtime` is false and `STALE(as-of <date>)` when its trade-date precedes `as_of`. Prior close and chg% derive from `schwab_bars.py` settled bars, never the quote. The live quote is valid only when `as_of` is today — the CLI refuses a past/future `as_of` (exit 3), so back-dated runs use settled bars. When `P1.last` is absent (back-dated or quote-failed), the headline cites `[P1.price]` `settled close` — never a tag missing from the pack. | `schwab_quote.py` guard (as_of==today, parsed dates); writer picks `[P1.last]`/`[P1.price]` by pack presence; `tiingo_oracle.py --live` `P1.px_last_oob` cross-checks |
+| 10 | P1–P5 fill from the named vendor CLIs; every fallback-filled fact stamps its real `src` and the section is boxed `DEGRADED(P#, reason)` in Data Gaps. P1 carries a tiingo cross-check stamp: same-asof-date closes within 0.5% → CROSS-CHECK OK, else CROSS-CHECK FAIL named in Data Gaps (run continues). This settled-close check stays 2-source (schwab + tiingo) — Finnhub's `/quote` has no as-of param, so it can only vote on the LIVE cross-check (invariant 11), not a settled historical close. | CLIs exit nonzero and never fabricate; orchestrator stamps src + gaps |
+| 11 | Current-day runs use `schwab_quote.py` `P1.last` (real trade-time) as the price headline; box it `DELAYED` when `P1.is_realtime` is false and `STALE(as-of <date>)` when its trade-date precedes `as_of`. Prior close and chg% derive from `schwab_bars.py` settled bars, never the quote. The live quote is valid only when `as_of` is today — the CLI refuses a past/future `as_of` (exit 3), so back-dated runs use settled bars. When `P1.last` is absent (back-dated or quote-failed), the headline cites `[P1.price]` `settled close` — never a tag missing from the pack. On a live-price CROSS-CHECK FAIL (`P1.last` vs `P1.px_last_oob` beyond 0.5%), fetch `vendors/finnhub_oracle.py` (current-day only, `FINNHUB_API_KEY`) as a 3rd independent source and run `scripts/price_crosscheck.py` for a deterministic 2-of-3 resolution — never leave a live disagreement unresolved for judges to adjudicate through; an unresolvable 3-way split is disclosed as an open discrepancy fact (`P1.crosscheck_status=fail_3way`), never silently picked. | `schwab_quote.py` guard (as_of==today, parsed dates); writer picks `[P1.last]`/`[P1.price]` by pack presence; `tiingo_oracle.py --live` `P1.px_last_oob` cross-checks; `price_crosscheck.py` resolves a disagreement 2-of-3 with `finnhub_oracle.py`'s vote |
 | 12 | Position facts (`15-position.*`) are withheld from analysts, debate, risk, and judges; only the writer and `qa_check.py` read them. The rating is position-blind. | stage read-sets above; artifact is never merged into `10-datapack.*` |
 | 13 | Account access is read-only across every position source: the CLIs list accounts + positions only (Schwab `GET /accounts`; SnapTrade `list_user_accounts` + `get_all_account_positions`). No order, trade, or mutation endpoint is ever referenced. | CLIs hold no order path; `test_schwab_account.py` + `test_snaptrade_account.py` assert absence |
 | 14 | Position is live-only: a past/future `--asof` yields no position (exit 3), never a fabricated historical holding. | `snaptrade_account.py` / `schwab_account.py` `--asof` guard (parsed dates vs today) |
@@ -184,7 +184,7 @@ in `10-datapack.md`. Flag any section past its staleness threshold as `STALE`.
 
 | § | Content | Source | STALE when |
 |---|---|---|---|
-| P1 | live price + day range/vol, chg%, 52wk, mcap (derived: price × EDGAR shares), avg vol | `vendors/schwab_quote.py` (live `P1.last`) + `vendors/schwab_bars.py` (settled close, chg%, 52wk) + `tiingo_oracle.py --live` cross-check; fallback stock-market-pro; crypto: Crypto.com MCP | quote trade-date < `as_of`; crypto >15 min |
+| P1 | live price + day range/vol, chg%, 52wk, mcap (derived: price × EDGAR shares), avg vol | `vendors/schwab_quote.py` (live `P1.last`) + `vendors/schwab_bars.py` (settled close, chg%, 52wk) + `tiingo_oracle.py --live` cross-check; `vendors/finnhub_oracle.py` as a 3rd vote ONLY on a schwab/tiingo live disagreement (see invariant 11); fallback stock-market-pro; crypto: Crypto.com MCP | quote trade-date < `as_of`; crypto >15 min |
 | P2 | SMA20/50/200, RSI14, MACD, ATR14 (abs+%), 30d σ | `vendors/schwab_bars.py`; fallback stock-market-pro | same as P1 |
 | P3 | rev/EPS TTM+YoY, margins, FCF, net debt, P/E (derived) | `vendors/edgar_fundamentals.py`; fallback stock-market-pro; crypto: `MISSING(by-design)` | >100 days |
 | P4 | ATM IV + term slope, put/call vol+OI, notable OI | `vendors/schwab_options.py`; fallback stock-market-pro; crypto: N/A | >1 trading day |
@@ -206,7 +206,13 @@ For P1 on a current-day run, also run `schwab_quote.py` (live `P1.last` + day
 range/vol; refuses a past `--asof` so back-dated runs use settled bars) and add
 `--live` to `tiingo_oracle.py` (emits the `P1.px_last_oob` cross-check). Use
 `P1.last` as the price headline with its trade-time as-of; keep `P1.price`
-(settled) as the prior-close/chg% base per invariant 11.
+(settled) as the prior-close/chg% base per invariant 11. Compare `P1.last` to
+`P1.px_last_oob`: if they agree within 0.5%, done. If they disagree, run
+`vendors/finnhub_oracle.py --ticker <T> --asof <today>` for a 3rd vote, merge
+its `P1.px_finnhub_oob` fact, then run `scripts/price_crosscheck.py
+10-datapack.json` and merge its `P1.crosscheck_*` facts — this resolves a
+2-of-3 majority deterministically or discloses an unresolvable 3-way split,
+never leaves a bare CROSS-CHECK FAIL for judges to work around.
 
 ## Position (Stage 1b, current-day only)
 
