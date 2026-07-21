@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Job B+C daily (resolve realized from UW + score). Runs Mon-Fri 14:05 local, after capture (13:35).
+     Needs no MT access. Install: cp to ~/Library/LaunchAgents/ then launchctl load. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.mt-alpha-score</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/bytedance/Work/Damn/trading-research-skill/market-terminal-alpha/scripts/mt_resolve_score.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>MT_ALPHA_DIR</key><string>/Users/bytedance/trading-reports/marketterminal</string></dict>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>14</integer><key>Minute</key><integer>5</integer></dict>
+  </array>
+  <key>StandardOutPath</key><string>/Users/bytedance/trading-reports/marketterminal/score.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/bytedance/trading-reports/marketterminal/score.err.log</string>
+</dict>
+</plist>
