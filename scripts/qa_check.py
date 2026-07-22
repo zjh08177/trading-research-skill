@@ -10,9 +10,11 @@ position file (15-position.json) is a second tag source for [H#.fact] tags.
 in the Bear case section actually appears in the Bull case section (fabricated
 strawman detector, always hard-fail, independent of --strict).
 --brief <path> (repeatable) additionally scans an analyst-brief-style artifact
-for a DATA GAP / MISSING / "not available" claim naming a [P#.fact] tag that
-is actually present (non-null) in the pack — a hallucinated gap, always
-hard-fail, independent of --strict.
+for (a) a DATA GAP / MISSING / "not available" claim naming a [P#.fact] tag
+that is actually present (non-null) in the pack — a hallucinated gap; and
+(b) validate_artifact.py's duplication family — the brief emitted twice, or
+two briefs glued at a concatenation seam. Both are always hard-fail,
+independent of --strict.
 --prose-qa <70-qa-prose.txt> requires the file to exist and be non-blank —
 proves the sonnet prose-QA pass actually ran and persisted its output;
 missing/empty is always a hard fail, independent of --strict.
@@ -33,6 +35,7 @@ import sys
 import levels_schema
 import replay
 import render_report as _render_report_mod
+import validate_artifact
 
 CHECK_SECTIONS = ("rating", "thesis", "risk", "position")
 TAG = r"\[[PH]\d+\.[A-Za-z0-9_]+\]"
@@ -196,6 +199,34 @@ def check_data_gap_hallucination(text, pack):
                                    f"claims {fact_id} is a DATA GAP/MISSING but the "
                                    f"pack has v={fact['v']!r} for it"))
     return results
+
+
+def check_brief_duplication(path, text):
+    """Wire validate_artifact.py's DUPLICATION family — and only that family —
+    into the --brief scan as a hard fail, same posture as the gap-hallucination
+    check above. A worker that silently emits its brief twice, or glues two
+    briefs at a seam, otherwise reaches the judge bundle undisclosed (the
+    UNH-2026-07-21-2147 20-analyst-sent.md defect). pipeline_driver.py gates
+    this at the source; this is defense in depth for hosts that don't run it.
+    The shape/length families are deliberately NOT adopted here: they encode
+    the current per-role contract, which most archived artifacts predate,
+    whereas duplication is contract-era-independent (validate_artifact.py
+    module docstring). Returns (errors, warnings)."""
+    name = os.path.basename(path)
+    warnings = []
+    try:
+        role = validate_artifact.resolve_role(name)
+    except validate_artifact.UnknownRole as exc:
+        # Never silently skip an artifact we were asked to scan: fall back to
+        # the role-independent subset ('report' is the one role exempt from the
+        # single-emission marker rule) and say exactly what was given up.
+        role = "report"
+        warnings.append(f"{name}: role not inferable from the filename ({exc}); "
+                        f"scanned for duplication WITHOUT the single-emission "
+                        f"'{validate_artifact.TERMINAL_MARKER}' marker rule")
+    errors = [f"{name}: {msg}"
+              for msg in validate_artifact.duplication_reasons(role, text)]
+    return errors, warnings
 
 
 def recompute_derived(pack):
@@ -413,6 +444,8 @@ def main(argv=None):
         debate_errors = [msg for ok, msg in debate_results if not ok]
 
     gap_errors = []
+    dup_errors = []
+    dup_warnings = []
     for brief_path in brief_paths:
         if not os.path.exists(brief_path):
             continue
@@ -420,6 +453,9 @@ def main(argv=None):
             brief_text = f.read()
         gap_errors += [f"{os.path.basename(brief_path)}: {msg}"
                         for ok, msg in check_data_gap_hallucination(brief_text, pack) if not ok]
+        berrors, bwarnings = check_brief_duplication(brief_path, brief_text)
+        dup_errors += berrors
+        dup_warnings += bwarnings
     gap_errors += [msg for ok, msg in check_data_gap_hallucination(report, pack) if not ok]
 
     prose_qa_errors = []
@@ -437,13 +473,14 @@ def main(argv=None):
     results = check_pairs(strip_riskbox(report), pack)
     dresults, dwarnings = recompute_derived(pack)
     results += dresults
-    warnings = scan_untagged(report) + dwarnings
+    warnings = scan_untagged(report) + dwarnings + dup_warnings
     result_fails = [msg for ok, msg in results if not ok]
     hard_base = result_fails + warnings if strict else result_fails
     hard = (replay_errors + invariant19_errors + debate_errors + gap_errors
-            + prose_qa_errors + footer_errors + hard_base)
-    # cutoff/replay/invariant-19/debate-fidelity/gap-hallucination/prose-qa/
-    # disclosure-footer failures are always hard, independent of --strict
+            + dup_errors + prose_qa_errors + footer_errors + hard_base)
+    # cutoff/replay/invariant-19/debate-fidelity/gap-hallucination/
+    # brief-duplication/prose-qa/disclosure-footer failures are always hard,
+    # independent of --strict
     out = ["== QA CITE CHECK =="]
     if replay_errors:
         out.append("== REPLAY GUARD ==")
@@ -460,6 +497,9 @@ def main(argv=None):
     if gap_errors:
         out.append("== DATA GAP HALLUCINATION ==")
         out += ["! " + msg for msg in gap_errors]
+    if dup_errors:
+        out.append("== BRIEF DUPLICATION (validate_artifact.py) ==")
+        out += ["! " + msg for msg in dup_errors]
     if footer_errors:
         out.append("== DISCLOSURE FOOTER (invariant 7) ==")
         out += ["! " + msg for msg in footer_errors]
