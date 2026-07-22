@@ -308,6 +308,10 @@ def calibration_footer(main_path, ticker, before):
 
 
 def cmd_append(args):
+    """Append to the live ledger. A duplicate run_id is a no-op success if the
+    new row is identical to the stored one, otherwise a hard reject (never
+    silently overwrite or double-count a run) — same posture as the replay lane.
+    `--allow-duplicate` opts out of the guard for the deliberate re-append case."""
     raw = args.row if args.row else sys.stdin.read()
     row = json.loads(raw)
     if getattr(args, "replay", False):
@@ -316,8 +320,29 @@ def cmd_append(args):
     if missing:
         sys.stderr.write(f"ERROR: row missing keys: {', '.join(missing)}\n")
         raise SystemExit(2)
+    # A present-but-null required key is not a row, it is a hole. Key PRESENCE
+    # alone let a run with an unfinished ensemble (mode_rating/spread null) into
+    # the canonical track record, where every downstream reader treats the row as
+    # a real published call. Rejecting is the only honest answer: `false`, `0`,
+    # and `[]` are values and still pass.
+    null_keys = [k for k in REQUIRED if row.get(k) is None]
+    if null_keys:
+        sys.stderr.write(f"ERROR: row has null required keys: "
+                         f"{', '.join(null_keys)}\n")
+        raise SystemExit(2)
     line = json.dumps(row, ensure_ascii=False)
     path = ledger_path(args.ledger)
+    if not getattr(args, "allow_duplicate", False):
+        for existing in read_jsonl(path, "ledger"):
+            if existing.get("run_id") == row.get("run_id"):
+                if existing == row:
+                    sys.stdout.write(
+                        f"appended: {row['run_id']} (duplicate, no-op)\n")
+                    return 0
+                sys.stderr.write(f"ERROR: run_id {row['run_id']} already exists "
+                                 "in ledger with different content (use "
+                                 "--allow-duplicate to append anyway)\n")
+                raise SystemExit(2)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a") as f:
@@ -441,6 +466,8 @@ def main(argv=None):
     a = sub.add_parser("append")
     a.add_argument("--row")
     a.add_argument("--replay", action="store_true")
+    a.add_argument("--allow-duplicate", action="store_true",
+                   help="append even if run_id already exists (live lane)")
     r = sub.add_parser("read")
     r.add_argument("--ticker", required=True)
     r.add_argument("--before", required=True)

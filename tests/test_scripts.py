@@ -207,6 +207,33 @@ def test_append_missing_key_exits_2(tmp_path):
     assert r.returncode == 2 and "missing keys" in r.stderr
 
 
+def test_append_null_required_value_exits_2(tmp_path):
+    """Key PRESENCE is not enough: a run whose ensemble never finished emits
+    mode_rating/spread as null, and that row must not enter the track record."""
+    led = tmp_path / "ledger.jsonl"
+    row = {"run_id": "r10", "ticker": "NVDA", "date_utc": "2026-06-01",
+           "as_of": "2026-06-01T20:00:00Z", "job": "J1", "mode_rating": None,
+           "distribution": {}, "spread": None, "no_call": False,
+           "gaps": [], "report_path": "nvda.md", "cost_usd": 5.1, "wall_s": 700}
+    r = _run("ledger.py", "--ledger", str(led), "append", "--row", json.dumps(row))
+    assert r.returncode == 2
+    assert "null required keys" in r.stderr
+    assert "mode_rating" in r.stderr and "spread" in r.stderr
+    assert not led.exists()                       # nothing was written
+
+
+def test_append_falsy_but_present_values_are_accepted(tmp_path):
+    """`0`, `false` and `[]` are values, not holes — the null guard must not
+    turn a legitimate zero-spread unanimous row into a rejection."""
+    led = tmp_path / "ledger.jsonl"
+    row = {"run_id": "r11", "ticker": "NVDA", "date_utc": "2026-06-01",
+           "as_of": "2026-06-01T20:00:00Z", "job": "J1", "mode_rating": "Buy",
+           "distribution": {"Buy": 3}, "spread": 0, "no_call": False,
+           "gaps": [], "report_path": "nvda.md", "cost_usd": 0, "wall_s": 0}
+    r = _run("ledger.py", "--ledger", str(led), "append", "--row", json.dumps(row))
+    assert r.returncode == 0 and "appended: r11" in r.stdout
+
+
 def test_append_write_failure_prints_row_exits_2(tmp_path):
     blocker = tmp_path / "blocker"
     blocker.write_text("i am a file, not a dir")
