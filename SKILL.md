@@ -403,6 +403,7 @@ disclose it. Insert the emitted `55-rating-block.md` into the report verbatim.
 | Failure | Behavior |
 |---|---|
 | One analyst/debater dies | proceed; role listed in Data Gaps; never re-invented by orchestrator |
+| Analyst/debater output MALFORMED (`validate_artifact.py` fail) | respawn once → quarantine the raw text to `<artifact>-malformed.md` + `MISSING(reason)` in Data Gaps — same handling as a dead role, never fed downstream undisclosed |
 | Judge malformed/hung | respawn once → drop + disclose N |
 | P1 unfillable | abstain report + ledger row (`no_call`, `gaps:["price"]`) |
 | Non-P1 section dead after 1 retry | `MISSING(reason)`, run continues |
@@ -514,6 +515,116 @@ Retry ladder (precedence pinned; each judge's exit code + stderr also append to
 read-only, bundle-only — a vote citing facts absent from the judge bundle is
 malformed.
 
+### Full stage mapping (host = codex)
+
+ADDITIVE, same posture as the Cursor mapping. On **host = codex** the pipeline
+does NOT run as orchestrator turns: `scripts/pipeline_driver.py` owns Stages
+1–7c as ONE deterministic process, and every LLM worker inside it is a
+`cursor-delegate.sh` subprocess (prompt on stdin, never argv; the driver writes
+every artifact, so workers stay read-only). Codex's native `spawn_agent` is used
+**zero** times for pipeline roles: a native subagent is a *model tool*, so every
+spawn and every wait costs an orchestrator reasoning turn — the exact cost this
+host exists to delete. Codex's own roster is OpenAI-only
+(`~/.codex/models_cache.json`), so the cross-vendor judge panel and the opus
+writer need the cursor CLI regardless.
+
+**Install:** copy or symlink `hosts/codex-command.md` → `~/.codex/prompts/trading-research.md`.
+
+**Scope (R4, same as Cursor):** single-ticker, **live mode only**. Batch/portfolio,
+the daily invalidation monitor, crypto, `--options`/`--options-only`, and historical
+as-of replay stay claude-code-only — the driver rejects each of them at parse time
+with exit 2 rather than half-running them.
+
+**Host detection:** the runner self-identifies (`TRADING_RESEARCH_HOST=codex`);
+a runner that is not Codex ignores this subsection entirely.
+
+The orchestrator's whole job is four steps.
+
+| Step | Orchestrator action |
+|---|---|
+| **0 Scope** | Write `00-scope.md` (job class, ticker, asset class, as-of) into the run dir. Parse any model-routing request in the user's query into `routing.json` — name ONLY the slots the user changed; every unnamed slot keeps its default. Then run the absolute `usage.py start --mode report …` and `eval` its export (§Usage capture), exactly as the Cursor host does. |
+| **1 Launch** | Start the driver as ONE background exec cell (below). Nothing else runs in that turn. |
+| **2 Poll** | Re-read the driver's stdout log until the cell exits. **A poll carries NO analysis** — no summarizing heartbeats, no interpreting partial artifacts, no re-deriving what a stage "probably" concluded. Poll, see "still running", stop. |
+| **3 Publish** | On exit 0, read `DRIVER-STATE.json`, report its summary, and run Stage 8 (below). On exit 10/20/2, handle the named `reason.code` — do not improvise past it. |
+
+Run dir is the ABSOLUTE canonical path `<SKILL_DIR>/runs/<TICKER>-<asof>-<hhmm>`
+(same R4 reason as the Cursor row: a foreign-cwd session must never drop
+`15-position.*` into an ungitignored project tree). Use that exact path and pass
+the matching `--stamp`, so Stage 1's `build_datapack.py` builds in place instead
+of building elsewhere and copying — a mismatch makes the builder's `00-scope.md`
+overwrite the one Stage 0 wrote.
+
+```bash
+# ONE background cell. Heartbeats go to the log; poll the log, not the workers.
+"$SKILL_DIR/.venv/bin/python" "$SKILL_DIR/scripts/pipeline_driver.py" \
+  --ticker "$TICKER" --run-dir "$RUN_DIR" --routing "$RUN_DIR/routing.json" \
+  --asof "$ASOF" --stamp "$STAMP" \
+  --worker-wrapper ~/.agent/bin/cursor-delegate.sh \
+  > "$RUN_DIR/driver.log" 2>&1
+```
+
+Heartbeat lines are `[driver] <iso-ts> stage=<n> status=<state> [extra]`, one per
+state change. `--resume` re-stats the artifacts in order and restarts at the first
+missing one (the existing resume rule, implemented natively).
+
+**Driver exit codes — what the orchestrator does with each**
+
+| Exit | Meaning | Orchestrator action |
+|---|---|---|
+| `0` | published-ready | Stage 8: copy `60-report.md` + `60-report.html` to `reports/single-ticker/<TICKER>/`, append `80-ledger-row.json` via `ledger.py append`, run `usage.py end`. Status may be `published-ready-with-qa-exceptions` — if so, SAY so; never report it as a clean pass. |
+| `10` | needs-orchestrator | Read `DRIVER-STATE.json:reason` `{code, detail}` and act on the named code (e.g. `stage2-empty`, `prose-qa-missing`, `ensemble-undecodable`, `stage6-no-report`, `invariant-12-violation`, `script-failed:<name>`, `driver-crash`). Report the failure; re-run with `--resume` only after the named cause is actually fixed. |
+| `20` | abstain | `p1-unfillable`: publish the abstain report and append the `no_call` ledger row (invariant 5 / failure map). |
+| `2` | bad invocation | Out-of-scope flag, unreadable/malformed `routing.json`, unknown routing slot, non-absolute run dir, non-today `--asof`. Fix the invocation — this is never a data problem. |
+
+The driver never copies to the vault and never appends to the canonical ledger
+(`ledger_appended`/`vault_copied` are `false` in `DRIVER-STATE.json`). Stage 8
+stays the orchestrator's gated step.
+
+**Explicit prohibitions on this host** (each of these is what the audited
+82-minute/328-request run actually did wrong):
+- **Never `spawn_agent` for a pipeline role.** Analysts, debaters, risk officer,
+  judges, writer, and QA prose pass are driver-owned worker subprocesses. A native
+  subagent for any of them is a defect, not an optimization.
+- **Never re-implement a stage inline.** If a stage failed, fix the cause and
+  re-run with `--resume`; hand-running a role in the orchestrator turn breaks
+  invariant 2 (the artifacts are the only inter-stage channel) and the receipt
+  census that `run_stats.py` computes the disclosure footer from.
+- **Never poll individual workers.** There is one thing to poll: the driver's log.
+
+**Model slots.** Defaults are the cross-vendor table in §Model slots (Cursor host)
+above, mirrored in the driver's `DEFAULT_ROUTING`. `routing.json` keys:
+`analyst`, `bull`, `bear`, `risk`, `judges` (list of exactly 3),
+`judges_escalation` (list of exactly 2), `writer`, `qa`. An unknown key or a
+wrong-length judge list is exit 2, not a silently-ignored typo — a run that
+quietly used the default panel when the user asked for another is an undisclosed
+routing change.
+
+**Artifact tool / HTML deliverable / cost footer**: identical to the Cursor rows —
+no Artifact tool on Codex, so `render_report.py`'s local HTML plus the vault copy
+IS the deliverable, the footer records `artifact: local-html`, and the cost field
+is `cursor-subscription (N/A)`.
+
+**Invariant 18 (extended — codex host; additive to 1–17):** in addition to the
+bundle-only rule above, on this host (a) every worker runs in a **stage-scoped
+view dir** holding only that stage's read-set per the Pipeline table, and no view
+except the writer's may ever contain `15-position.*` — this makes invariant 12
+mechanical instead of prompt-enforced, and the driver records every view dir plus
+`position_views_ok` in `DRIVER-STATE.json`; and (b) a worker artifact is accepted
+into the run folder only after `scripts/validate_artifact.py` passes for its role —
+a rejected artifact is respawned once, then quarantined and disclosed per the
+failure map, never fed downstream.
+
+**TODO (UNVERIFIED — measure, do not assume): poll `yield_time_ms` ceiling.**
+The intent is that step 2 polls with the LARGEST value Codex actually honors, so a
+~15-minute driver run costs a handful of polls rather than dozens. It is unverified
+whether Codex honors values above 30 s; until it is measured, poll at 30 s and do
+not claim a larger interval works. Probe once in a live Codex Desktop session:
+start a background cell `bash -lc 'sleep 600'`, then poll that same cell four times
+requesting `yield_time_ms` = 10000, 30000, 60000, 120000, recording wall-clock
+elapsed around each call. The honored ceiling is the largest requested value whose
+observed gap matches the request within ~20%. Write the measured number here and
+delete this TODO.
+
 ## Grounding and completion honesty
 
 - **Self-grounding**: Before reporting any status or figure, audit each claim
@@ -522,6 +633,14 @@ malformed.
 - **Anti-early-stop**: End-of-turn self-check — if the last paragraph promises
   future work, either do the work now or explicitly hand off; never end on an
   unfulfilled promise.
-- **Verifier cadence**: For runs longer than a few actions, dispatch a
-  fresh-context verifier subagent to check the work product; independent
-  verification tends to outperform self-critique.
+- **Verifier cadence (hard cap)**: This pipeline's own gates — `qa_check.py`,
+  `ensemble.py`, `run_stats.py --check-footer`, `validate_artifact.py` — ARE the
+  verification layer for a single-ticker run; they are deterministic, they read
+  the artifacts rather than a summary of them, and they already cover the three
+  failure-prone edges. So for a single-ticker run, **do not spawn additional ad hoc
+  audit/verifier subagents** — an extra reviewer here buys no coverage the gates
+  do not already have and costs the orchestrator turns this pipeline is budgeted
+  against. The ONE permitted extra verifier is a single fresh-context pass, and
+  only when `qa_check.py --strict` has failed **twice in a row** on the same run
+  (i.e. the existing QA-exceptions path is about to fire) — that is a real
+  unexplained-failure signal, not a cadence.
