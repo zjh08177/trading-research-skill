@@ -11,6 +11,7 @@ Usage: render_report.py <60-report.md> [<out.html>]
   reads siblings 10-datapack.json / 15-position.json / 56-levels.json when present.
 Import: md_to_html(md, dashboard); build_dashboard(pack,pos,levels); CSS; full_page.
 """
+import argparse
 import html
 import json
 import re
@@ -563,9 +564,29 @@ def full_page(inner, title):
     return PAGE_TMPL.format(title=html.escape(title), css=CSS, inner=inner)
 
 
+def _parse_args(argv):
+    """Consume the CLI before any path binding or write, so `--help` prints usage
+    instead of being treated as the report path (see snapshot_holdings.py, same
+    class of near-miss). Returns (args, exit_code); exit_code is not None when
+    argparse handled the invocation itself. Positional use is unchanged."""
+    parser = argparse.ArgumentParser(
+        prog="render_report.py",
+        description="Render a 60-report.md into a self-contained styled HTML page.")
+    parser.add_argument("report", help="path to 60-report.md")
+    parser.add_argument("out_html", nargs="?", default=None,
+                        help="output path (default: <report>.html)")
+    try:
+        return parser.parse_args(argv), None
+    except SystemExit as e:                    # -h/--help or an unparseable flag
+        return None, int(e.code or 0)
+
+
 def main(argv):
-    src = Path(argv[0])
-    out = Path(argv[1]) if len(argv) > 1 else src.with_suffix(".html")
+    args, rc = _parse_args(argv)
+    if rc is not None:                         # nothing read, nothing written
+        return rc
+    src = Path(args.report)
+    out = Path(args.out_html) if args.out_html else src.with_suffix(".html")
     md = src.read_text()
     d = src.parent
     pack = json.loads((d / "10-datapack.json").read_text()) if (d / "10-datapack.json").exists() else {}

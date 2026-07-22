@@ -19,3 +19,10 @@ handoff-*.md
 
 # Local usage telemetry sink (0600, uncommitted — privacy publication boundary)
 .local-usage/
+
+# Catch-all for option tokens accidentally bound as an output path. A `--help`
+# probe once became snapshot_holdings.py's output dir and wrote LIVE holdings to
+# ./--help/ here. The scripts now guard their argv; this is the second line of
+# defense so such a path can never be committed (R4).
+/--*/
+/--*
