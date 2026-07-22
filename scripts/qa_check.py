@@ -124,11 +124,36 @@ def check_pairs(text, pack):
         cmp = num / 100 if has_pct and pack[fact_id].get("unit") == "ratio" else num
         tol = 0.05 if approx else 0.005
         rel = abs(cmp - v) / abs(v) if v else abs(cmp - v)
-        if rel <= tol:
+        # A7 (fixed 2026-07-18): a PURE relative tolerance false-fails small-magnitude
+        # facts. Correctly rounding MACD 0.2317544 to 0.23 is a 0.76% relative error and
+        # hard-failed QA, while the same 2-decimal convention on a $495 price is 0.001%.
+        # P9 added many such facts (ATR stretch ~-0.088, z-scores, MACD), taking cite
+        # failures from 4/32 to 11/32 tickers. Allow an absolute floor of half a unit in
+        # the last decimal place the report actually wrote, so a CORRECTLY ROUNDED
+        # citation passes while a genuinely wrong one still fails: 0.23 vs 0.2317544
+        # passes (|d|=0.0018 <= 0.005); 0.25 vs 0.2317544 fails (|d|=0.0182 > 0.005).
+        # This does NOT loosen large-magnitude checks: 495.76 vs 510.0 stays a failure.
+        # Two guards on that floor, both load-bearing:
+        # (1) SCALE it like `cmp`. `decimals` counts the digits the author TYPED,
+        #     but for a %-cited unit:ratio fact `cmp` was divided by 100 above, so
+        #     an unscaled floor is 100x too generous: "120%" vs ratio 1.091 got a
+        #     0.5 floor in ratio units — 50 percentage points of slack — and passed.
+        # (2) Only apply it when the author wrote a DECIMAL. At decimals=0 the floor
+        #     is half a whole unit, which swamps the relative tolerance at small
+        #     magnitudes ("20" vs 19.86 is 0.70% rel, over strict) and would retire
+        #     the `~` approximate-marker convention for every round number. Every
+        #     fact motivating A7 (MACD 0.2317544, ATR stretch -0.088, z-scores) is
+        #     written WITH decimals, so this keeps A7's intent intact.
+        decimals = len(m.group(2).split(".")[1]) if "." in m.group(2) else 0
+        scale = 100.0 if (has_pct and pack[fact_id].get("unit") == "ratio") else 1.0
+        abs_tol = 0.0 if (approx or decimals == 0) else 0.5 * (10 ** -decimals) / scale
+        delta = abs(cmp - v)
+        if rel <= tol or delta <= abs_tol:
             results.append((True, f"PASS {fact_id}: {num}{'%' if has_pct else ''} matches {v}"))
         else:
             results.append((False, f"FAIL {fact_id}: report {num}{'%' if has_pct else ''} "
-                                   f"vs pack {v} (rel {rel:.2%} > {tol:.1%})"))
+                                   f"vs pack {v} (rel {rel:.2%} > {tol:.1%}, "
+                                   f"abs {delta:.6g} > {abs_tol:.6g})"))
     return results
 
 
