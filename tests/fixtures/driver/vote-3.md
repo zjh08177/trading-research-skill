@@ -1,0 +1,6 @@
+Reported momentum supports a positive bias: revenue growth was 13.8429% [P3.revenue_yoy] and EPS growth was 27.4112% [P3.eps_yoy]. Price is 2.4245 ATR14 above SMA50 [P9.stretch_sma50_atr]; limited exhaustion—1/4 [P9.exhaustion_tally]—and no climax [P9.climax] argue against fading strength. However, MACD at 7.3519 [P2.macd] trails its signal at 8.24635 [P2.macd_signal]. Operating margin is 6.1815% [P3.operating_margin_ttm], net debt is 60836000000 USD [P3.net_debt], and valuation at 21.73 [P3.pe_ttm] requires sustained execution.
+
+Right-side confirmation is closer because the broad trend exists, while counter-trend evidence remains sparse and the regime is clustered [P9.cluster_status]. DATA GAP: precomputed ATR distance to right-side confirmation. DATA GAP: valid bear rebuttal and tagged realized-return track-record metric; these limit conviction without creating a bull concession.
+
+KEY POINTS: • Growth and trend favor upside. • Extension, softer momentum, leverage, and evidence gaps cap conviction.
+VERDICT: Buy | CONVICTION: 6 | ENTRY-PATH: right-side nearer; left-side pending (1/4 [P9.exhaustion_tally] exhaustion-turning conditions met) | WHY: Growth and trend outweigh risks, but confirmation and forward durability remain unproven.

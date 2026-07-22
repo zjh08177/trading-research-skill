@@ -1,0 +1,8 @@
+{
+ "H1.held": {
+  "v": false,
+  "unit": "bool",
+  "asof": "2026-07-22T04:51:16.691507+00:00",
+  "src": "snaptrade"
+ }
+}
