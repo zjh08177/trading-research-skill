@@ -26,3 +26,10 @@ handoff-*.md
 # defense so such a path can never be committed (R4).
 /--*/
 /--*
+
+# Agent-harness scaffolding that lands in the project root. Not project code:
+# session-env/ is a Stop-gate verification marker written per Claude Code
+# session (a second session dropped one here); .serena/ is Serena MCP's project
+# cache. Neither belongs in a public repo.
+session-env/
+.serena/
