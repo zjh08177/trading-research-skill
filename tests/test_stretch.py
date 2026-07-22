@@ -28,12 +28,15 @@ def _run(tmp_path, pack, extra_args=()):
 
 
 def test_stretch_signs_and_magnitude(tmp_path, capsys):
+    # Every float stretch fact is emitted at 2dp (an unrounded
+    # "2.424549120275739 ATR14 above SMA50" once shipped in a published summary),
+    # so the expectation is the exactly-rounded value, not the raw quotient.
     code = _run(tmp_path, _pack())
     out = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert out["P9.stretch_sma50_atr"]["v"] == pytest_approx((142.48 - 205.21) / 34.47)
-    assert out["P9.stretch_sma200_atr"]["v"] == pytest_approx((142.48 - 93.42) / 34.47)
-    assert out["P9.move_atr"]["v"] == pytest_approx(-13.94 / 24.19)
+    assert out["P9.stretch_sma50_atr"]["v"] == round((142.48 - 205.21) / 34.47, 2)
+    assert out["P9.stretch_sma200_atr"]["v"] == round((142.48 - 93.42) / 34.47, 2)
+    assert out["P9.move_atr"]["v"] == round(-13.94 / 24.19, 2)
 
 
 def test_climax_flag_false_when_sub_atr(tmp_path, capsys):
@@ -92,7 +95,7 @@ def test_zero_atr14_does_not_crash_and_emits_none(tmp_path, capsys):
     assert out["P9.stretch_sma20_atr"]["v"] is None
     assert out["P9.stretch_sma50_atr"]["v"] is None
     assert out["P9.stretch_sma200_atr"]["v"] is None
-    assert out["P9.move_atr"]["v"] == pytest_approx(-13.94 / 24.19)
+    assert out["P9.move_atr"]["v"] == round(-13.94 / 24.19, 2)
 
 
 def test_zero_price_is_used_not_silently_swapped_for_last(tmp_path, capsys):
@@ -106,7 +109,7 @@ def test_zero_price_is_used_not_silently_swapped_for_last(tmp_path, capsys):
     code = _run(tmp_path, pack)
     out = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert out["P9.stretch_sma50_atr"]["v"] == pytest_approx((0.0 - 205.21) / 34.47)
+    assert out["P9.stretch_sma50_atr"]["v"] == round((0.0 - 205.21) / 34.47, 2)
 
 
 def test_zero_sigma30_emits_zero_decay_risk_not_absent(tmp_path, capsys):

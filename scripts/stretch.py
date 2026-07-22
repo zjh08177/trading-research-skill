@@ -51,15 +51,20 @@ def build(pack, leverage=1):
     # same way this file already guards move_atr against atr_pct==0 below
     # (and the way risk_box.py guards its own move_atr against atr_pct==0):
     # emit None ("cannot normalize") instead of raising ZeroDivisionError.
+    # 2dp everywhere: these facts are quoted verbatim in the report prose, and an
+    # unrounded "2.424549120275739 ATR14 above SMA50" once shipped in a published
+    # executive summary. Siblings (percentile.py, move_base_rate.py,
+    # volume_climax.py) already round; qa_check.py's 0.5% tolerance absorbs it.
     facts = {
-        "P9.stretch_sma20_atr": _fact((price - sma20) / atr if atr else None, "ATRs", asof),
-        "P9.stretch_sma50_atr": _fact((price - sma50) / atr if atr else None, "ATRs", asof),
-        "P9.stretch_sma200_atr": _fact((price - sma200) / atr if atr else None, "ATRs", asof),
+        "P9.stretch_sma20_atr": _fact(round((price - sma20) / atr, 2) if atr else None, "ATRs", asof),
+        "P9.stretch_sma50_atr": _fact(round((price - sma50) / atr, 2) if atr else None, "ATRs", asof),
+        "P9.stretch_sma200_atr": _fact(round((price - sma200) / atr, 2) if atr else None, "ATRs", asof),
         "P9.stretch_sma50_sigma": _fact(
-            ((price - sma50) / sma50 * 100) / sigma if sigma else None,
+            round(((price - sma50) / sma50 * 100) / sigma, 2) if sigma else None,
             "sigma30_multiples", asof),
     }
-    move_atr = chg / atr_pct if atr_pct else None
+    # rounded BEFORE the climax test so the emitted fact and the flag agree
+    move_atr = round(chg / atr_pct, 2) if atr_pct else None
     facts["P9.move_atr"] = _fact(move_atr, "ATRs", asof)
     climax = move_atr is not None and abs(move_atr) >= CLIMAX_ATR
     facts["P9.climax"] = _fact(climax, "bool", asof)
