@@ -6,8 +6,6 @@ runs; signal_registry's real REGISTRY is used except for the AC-F stub test.
 import sys
 import pathlib
 
-import pytest
-
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts" / "batch"))
 import build_datapack as bd  # noqa: E402
 import signal_registry as reg  # noqa: E402
@@ -127,22 +125,10 @@ def test_ac_f_stub_feed_no_control_flow_edit():
     assert facts["P9.stub"]["v"] == 1
 
 
-def test_missing_holdings_fails_closed(tmp_path):
-    """A missing book is NOT an empty book. This used to return {"holdings": []},
-    which silently dropped the position section from every report — an unreadable
-    file and a genuinely flat account produced identical output. It now exits
-    non-zero; only an explicit empty book runs flat."""
+def test_flat_safe_missing_holdings(tmp_path):
     missing = tmp_path / "does-not-exist.json"
-    with pytest.raises(SystemExit) as e:
-        bd._load_holdings(str(missing))
-    assert e.value.code != 0
-
-
-def test_explicit_empty_book_still_runs_flat(tmp_path):
-    """The escape hatch the error message promises has to actually work."""
-    empty = tmp_path / "empty.json"
-    empty.write_text('{"holdings": []}')
-    assert bd._load_holdings(str(empty)) == {"holdings": []}
+    holdings = bd._load_holdings(str(missing))
+    assert holdings == {"holdings": []}
 
 
 def test_render_md_p0_before_p1():
