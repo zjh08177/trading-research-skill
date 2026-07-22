@@ -57,6 +57,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = SCRIPTS_DIR.parent
 sys.path.insert(0, str(SCRIPTS_DIR))
 import validate_artifact  # noqa: E402  -- the artifact accept-gate (TASK 1)
+import trace as trace_mod  # noqa: E402  -- profiler: reader-only, stdlib-only
 
 EXIT_OK = 0
 EXIT_NEEDS_ORCH = 10
@@ -97,6 +98,38 @@ TIMEOUTS = {
     "prose_qa": 420, "qa_fix": 420,
 }
 
+# --- profiler thresholds (constants, not config -- see design-proposal.md) ---
+# S1 online liveness: no output for this long (seconds) is a stall episode.
+STALL_AFTER_S = int(os.environ.get("TRDRV_STALL_AFTER_S", "120"))
+# S2 wrapper attribution: wrapper_ms above this floor (ms) OR this fraction of
+# wall_ms, whichever is larger, is an anomaly.
+WRAPPER_ANOMALY_FLOOR_MS = 30_000
+WRAPPER_ANOMALY_FRAC = 0.2
+# S3 budget fraction: wall_ms above this fraction of the call's timeout budget
+# is drifting toward the SIGTERM cliff.
+NEAR_TIMEOUT_FRAC = 0.8
+# Fan-out straggler rule (computed in trace.py's summarize(), L2 -- duplicated
+# here only as documentation; trace.py owns its own copy so it never imports
+# the driver).
+STRAGGLER_RATIO = 2.0
+STRAGGLER_FLOOR_MS = 60_000
+
+# --- pipe drain (see _run_once) --------------------------------------------
+# How long the reader threads get to reach EOF AFTER the child has been reaped.
+# EOF on the driver's read end arrives only when EVERY copy of the write end is
+# closed, so a grandchild (cursor-agent, forked by cursor-delegate.sh) that
+# inherited the pipe and outlived the wrapper keeps the reader blocked in
+# read() indefinitely -- the orphaned-process class behind the 12-minute stall.
+# When this grace expires with a reader still alive the drain is INCOMPLETE:
+# the call is failed as `output-truncated`, never returned as if it were whole.
+DRAIN_JOIN_TIMEOUT_S = 30
+STDIN_JOIN_TIMEOUT_S = 5
+# One os.read() per chunk: it returns as soon as ANY bytes are available, which
+# is what makes ttfa_ms truthful and `worker-resume` reachable. A buffered
+# read(N) is read-until-full and would only move `last_activity` in N-byte
+# steps (defect 5).
+READ_CHUNK_BYTES = 65536
+
 # The delegate's proof-of-invocation line (cursor-delegate.sh, stderr). A plain
 # non-empty stdout does NOT prove a model ran; only a receipt whose promptSha256
 # matches the bytes we sent does.
@@ -136,6 +169,12 @@ NONFINAL_DECISIONS = ("escalate", "backfill")
 # still appears in the manifest, described as "(undescribed artifact)" -- an
 # unexplained file is reported, never hidden.
 ARTIFACT_DESCRIPTIONS = {
+    "trace/trace.jsonl": "Profiler L1: append-only per-event execution trace "
+                        "(no prompt bodies). See scripts/trace.py.",
+    "trace/summary.json": "Profiler L2: wall decomposition, stragglers, waste, "
+                          "anomalies -- computed by scripts/trace.py summarize().",
+    "trace/operator.json": "Profiler L3 cache: orchestrator cost extracted from a "
+                           "Codex rollout log (scripts/trace.py operator).",
     "00-scope.md": "Stage 0 scope: job class, ticker, asset class, as-of.",
     "10-datapack.json": "Stage 1 data pack, fact-id keyed (P1-P9).",
     "10-datapack.md": "Stage 1 data pack rendered; injected verbatim into every worker prompt.",
@@ -178,6 +217,26 @@ def sha256(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _decode_stream(chunks):
+    """Join binary pipe chunks into the str the rest of the driver expects.
+
+    `errors="replace"` on purpose: the reader threads read BYTES precisely so
+    that no malformed sequence can raise mid-drain and strand the remainder of
+    a worker's output with no signal (`Popen(text=True)` raised
+    `UnicodeDecodeError` -- a `ValueError` -- from inside the reader thread).
+    Decoding once, here, at the end, cannot lose anything: the replacement
+    character is visible in the artifact, whereas a dead reader is not.
+
+    The two replaces reproduce `text=True`'s universal-newline translation
+    (\\r\\n and lone \\r both become \\n) so the artifact bytes, and therefore
+    `outputSha256` and every accept-gate shape check, are unchanged by the
+    switch to binary pipes."""
+    raw = b"".join(chunks)
+    if not raw:
+        return ""
+    return raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
 class DriverError(Exception):
     """A condition the driver cannot honestly resolve. Carries the
     machine-readable reason the orchestrator acts on."""
@@ -192,6 +251,96 @@ class DriverError(Exception):
 class WorkerResult(dict):
     """Plain dict; attribute-free on purpose so it serializes into receipts.json
     without a conversion step."""
+
+
+class Trace:
+    """Append-only `trace/trace.jsonl` writer -- stdlib only, one lock, one
+    append handle, opened lazily on the first event so merely constructing a
+    Driver (as most unit tests do) never touches disk.
+
+    flush() runs after every write so a crashed run still has a
+    complete-to-the-crash trace (criterion 9). Not a second source of truth
+    (design-proposal.md): every event is additive and derived, never read back
+    by the driver to make a decision.
+
+    NEVER FATAL, NEVER SILENT. `trace.jsonl` is purely observational, so an
+    I/O error while writing it (disk full, quota, permission, a `trace` path
+    that is not a directory) must never convert a fully-successful run into
+    `driver-crash`/needs-orchestrator via `_run_driver`'s catch-all. Every
+    write is therefore guarded: the first failure warns ONCE through the
+    driver's own `warn()` (stderr + `DRIVER-STATE.json:notes`), latches
+    `degraded`, and is surfaced as `trace_degraded` in `DRIVER-STATE.json` and
+    in `trace/summary.json`. The run continues; the degradation is declared."""
+
+    def __init__(self, run_dir, on_degrade=None):
+        self.path = Path(run_dir) / "trace" / "trace.jsonl"
+        self._lock = threading.Lock()
+        self._degrade_lock = threading.Lock()
+        self._fh = None
+        self._on_degrade = on_degrade
+        self.degraded = False
+        self.degraded_reason = None
+        self.dropped_events = 0
+
+    def _degrade(self, exc, what):
+        """Latch + announce an instrumentation I/O failure. Announces exactly
+        once (the disk stays full for the rest of the run; 200 identical
+        warnings would bury the real one) but counts every dropped event so
+        the summary can say how much of the trace is missing."""
+        with self._degrade_lock:
+            self.dropped_events += 1
+            first = not self.degraded
+            if first:
+                self.degraded = True
+                self.degraded_reason = f"{what}: {type(exc).__name__}: {exc}"
+            reason = self.degraded_reason
+        if first and self._on_degrade is not None:
+            try:
+                self._on_degrade(
+                    f"trace instrumentation degraded ({reason}) — the run CONTINUES; "
+                    f"trace/trace.jsonl is incomplete from this point on")
+            except Exception:                                         # noqa: BLE001
+                pass                      # a broken warn() must not be fatal either
+
+    def emit(self, ev, **fields):
+        # Millisecond precision, NOT hb()/DRIVER-STATE.json's now_iso()
+        # (timespec="seconds"): trace.py's straggler/concurrency detection
+        # (summarize()) reconstructs a worker's [start, end) window from `t`
+        # and `wall_ms`, and mock-mode calls routinely complete in well under
+        # a second -- second-granularity timestamps would make two genuinely
+        # sequential calls (e.g. stage 3's bull-then-bear) look concurrent.
+        try:
+            t = datetime.datetime.now(datetime.timezone.utc).isoformat(
+                timespec="milliseconds")
+            rec = {"t": t, "ev": ev}
+            rec.update(fields)
+            line = json.dumps(rec, sort_keys=True) + "\n"
+        except Exception as exc:                                      # noqa: BLE001
+            self._degrade(exc, "serialize")
+            return
+        try:
+            with self._lock:
+                if self._fh is None:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    self._fh = open(self.path, "a", encoding="utf-8")
+                self._fh.write(line)
+                self._fh.flush()
+        except Exception as exc:                                      # noqa: BLE001
+            # Deliberately broad: EVERY failure mode of an observational write
+            # (OSError, ValueError on a closed handle, anything an exotic
+            # filesystem raises) is a degradation, never a run-killer.
+            self._degrade(exc, "write")
+
+    def close(self):
+        try:
+            with self._lock:
+                if self._fh is not None:
+                    try:
+                        self._fh.close()
+                    finally:
+                        self._fh = None
+        except Exception as exc:                                      # noqa: BLE001
+            self._degrade(exc, "close")
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +379,11 @@ class Driver:
         self._cards = None
         self._stage_open = None
         self._receipt_lock = threading.Lock()
+        # on_degrade=self.warn: an instrumentation I/O failure is announced on
+        # stderr AND recorded in DRIVER-STATE.json:notes, never swallowed.
+        self.trace = Trace(self.run_dir, on_degrade=self.warn)
+        self.routing_sha256 = None
+        self._final_ledger_row = None
 
     # --- logging ----------------------------------------------------------
 
@@ -263,6 +417,7 @@ class Driver:
                             "notes": []}
         self.stages.append(self._stage_open)
         self.hb(stage, f"{name}-start")
+        self.trace.emit("stage-start", stage=stage, name=name)
         return self._stage_open
 
     def stage_end(self, status="ok", note=None):
@@ -275,6 +430,8 @@ class Driver:
         if note:
             st["notes"].append(note)
         self.hb(st["stage"], f"{st['name']}-{status}", f"{st['elapsed_s']}s")
+        self.trace.emit("stage-end", stage=st["stage"], name=st["name"],
+                        status=status, wall_ms=int(round(st["elapsed_s"] * 1000)))
         self._stage_open = None
 
     def stage_note(self, note):
@@ -286,6 +443,8 @@ class Driver:
                             "started_at": now_iso(), "ended_at": now_iso(),
                             "elapsed_s": 0.0, "notes": [why]})
         self.hb(stage, f"{name}-skipped", why)
+        self.trace.emit("stage-end", stage=stage, name=name, status="skipped",
+                        wall_ms=0)
 
     # --- paths -------------------------------------------------------------
 
@@ -344,6 +503,7 @@ class Driver:
                                   f"got {value!r}", EXIT_BAD_INVOCATION)
             routing[key] = value
         self.routing = routing
+        self.routing_sha256 = sha256(json.dumps(routing, sort_keys=True))
         self.hb("0", "routing-loaded", json.dumps(routing, sort_keys=True))
 
     # --- role cards --------------------------------------------------------
@@ -457,7 +617,70 @@ class Driver:
         with self._receipt_lock:
             self.call_records.append(record)
         self.flush_receipts()
+        self._trace_worker_end(res, record)
         return record
+
+    def _trace_worker_end(self, res, record):
+        """Emit `worker-end` (S2's model/wrapper split) plus any S2/S3
+        anomalies -- once per `_run_once` call, matching receipts.json's
+        `calls` cardinality exactly (criterion 2 census agreement) regardless
+        of which of `_run_once`'s branches produced `res`.
+
+        `accepted` mirrors the census value AT CALL TIME (before the
+        validate_artifact accept-gate runs in `worker_artifact`): trace.jsonl
+        is append-only, so a later rejection corrects `receipts.json` in
+        place but cannot rewrite an already-flushed trace line -- the same
+        limitation `record_call`'s own docstring already accepts for the
+        first `receipts.json` write."""
+        wall_ms = res.get("duration_ms")
+        receipt_path = res.get("receipt_path")
+        model_ms = res.get("receipt_duration_ms") if receipt_path is not None else None
+        wrapper_ms = (wall_ms - model_ms) if (receipt_path is not None
+                                              and wall_ms is not None
+                                              and model_ms is not None) else None
+        output_bytes = len(res["text"].encode("utf-8")) if res.get("text") else 0
+        self.trace.emit(
+            "worker-end", role=res.get("role"), stage=res.get("stage"),
+            slot=res.get("slot"), model=res.get("model_requested"),
+            cli_model=res.get("cliModel"), attempt=res.get("attempt"),
+            ok=bool(res.get("ok")), failure=res.get("failure"),
+            wall_ms=wall_ms, model_ms=model_ms, wrapper_ms=wrapper_ms,
+            ttfa_ms=res.get("ttfa_ms"), output_bytes=output_bytes,
+            exit=res.get("exit_code"), receipt_path=receipt_path,
+            truncated=bool(res.get("truncated")),
+            accepted=record.get("accepted"))
+        self._check_worker_anomalies(res, wall_ms, model_ms, wrapper_ms)
+
+    def _emit_stall_anomaly(self, role, stage, attempt, ms, detail):
+        """S1's stall, as an `anomaly{kind: worker-stalled}` -- the L1 schema
+        the design proposal specifies, and the ONLY form of a stall that
+        reaches `trace/summary.json`.
+
+        The raw `worker-stall`/`worker-resume` pair is the ONLINE signal (it is
+        what the orchestrator's no-analysis poll reads while the run is still
+        going). `summarize()` copies `anomaly` events verbatim and nothing
+        else, so without this a worker that stalled for 200s and recovered
+        inside its budget left no trace in the artifact an operator actually
+        reads afterwards -- defeating the headline feature."""
+        self.trace.emit("anomaly", kind="worker-stalled", role=role, stage=stage,
+                        attempt=attempt, ms=int(ms), detail=detail)
+
+    def _check_worker_anomalies(self, res, wall_ms, model_ms, wrapper_ms):
+        """S2 (wrapper attribution) and S3 (budget fraction) -- mechanical,
+        no model judgment. S1 (online liveness) fires live from inside
+        `_run_once`; the fan-out straggler rule is computed later, in
+        trace.py's `summarize()` (L2), not here."""
+        role, stage = res.get("role"), res.get("stage")
+        if wrapper_ms is not None and wall_ms is not None and \
+                wrapper_ms > max(WRAPPER_ANOMALY_FLOOR_MS, WRAPPER_ANOMALY_FRAC * wall_ms):
+            self.trace.emit("anomaly", kind="wrapper-overhead", role=role, stage=stage,
+                            ms=wrapper_ms,
+                            detail=f"wrapper_ms={wrapper_ms} of wall_ms={wall_ms}")
+        timeout_s = res.get("timeout_s")
+        if wall_ms is not None and timeout_s and wall_ms > NEAR_TIMEOUT_FRAC * timeout_s * 1000:
+            self.trace.emit("anomaly", kind="near-timeout", role=role, stage=stage,
+                            ms=wall_ms,
+                            detail=f"wall_ms={wall_ms} of {timeout_s}s budget")
 
     def flush_receipts(self):
         with self._receipt_lock:
@@ -480,40 +703,287 @@ class Driver:
         `cursor-delegate.sh` reads stdin via `$(cat)`, which strips trailing
         newlines before hashing, so the caller must hash the same bytes -- the
         prompt is rstripped of newlines before both sending and hashing, or
-        every receipt check would false-fail."""
+        every receipt check would false-fail.
+
+        S1 (online liveness, design-proposal.md): `Popen` with pipes, three
+        daemon threads -- one writing stdin, two draining stdout/stderr -- so
+        the child can always make progress on BOTH sides at once, exactly like
+        `communicate()` does internally. Every chunk moves `last_activity`
+        (and, on the first chunk from either stream, sets `ttfa_ms`). The main
+        thread polls at ~1 s intervals up to `timeout_s` and, when silence
+        exceeds `STALL_AFTER_S`, emits a `-stall` heartbeat + `worker-stall`
+        trace event ONCE per stall episode; renewed activity emits
+        `worker-resume` + an `anomaly{kind: worker-stalled}` (the raw pair is
+        the online signal; the anomaly is what reaches `summary.json`).
+
+        The drain is BYTE-EXACT AND PER-CHUNK. The pipes are opened in binary
+        mode and each reader does ONE `os.read()` per iteration: `os.read`
+        returns as soon as any bytes are available, whereas a buffered
+        `read(N)` is read-until-full and would only move `last_activity` in
+        N-byte steps -- which made `ttfa_ms` report the time of the 64th KB
+        rather than of the first byte, and made `worker-resume` unreachable
+        for any worker whose stall-interrupted output is under one chunk.
+        Decoding happens ONCE, at the end, with `errors="replace"`: a bad byte
+        sequence can therefore never abort a reader mid-stream and silently
+        strand the rest of the output (the `text=True` + `UnicodeDecodeError`
+        regression), and universal-newline translation is reproduced
+        explicitly so the artifact bytes are what they were before.
+
+        The reader threads keep draining -- unconditionally, until EOF --
+        through the SIGTERM/15s-grace/SIGKILL sequence too: a reader that
+        stops draining while the child still writes is the deadlock this
+        rewrite exists not to introduce. They are joined before their buffers
+        are read, and a reader still alive when the join grace expires means
+        the drain is INCOMPLETE (a grandchild is holding the pipe write-end
+        open past its parent's death). That is declared -- `truncated` on the
+        result, a `worker-truncated` + `anomaly` trace event, a `warn()`, and
+        an `output-truncated` failure -- never returned as if it were whole:
+        writing a silently short report as the run's artifact, or
+        misclassifying a call as `no-receipt` because the receipt line had not
+        been drained yet, is the exact silent degradation this driver exists
+        to prevent.
+
+        Timeout semantics, the retry, the receipt-prompt-mismatch check and
+        the "no receipt = the call did not happen" rule are unchanged from the
+        `communicate()`-based version."""
         cmd = list(self.worker_cmd) + ["--dir", view_dir, "--mode", "read-only",
                                        "--model", model]
         started_ms = int(time.time() * 1000)
+        spawn_mono = time.monotonic()
+        meta = meta or {}
         res = WorkerResult({
             "role": role, "model_requested": model, "attempt": attempt,
             "cmd": cmd[0], "view_dir": view_dir, "started_ms": started_ms,
             "promptSha256": sha256(prompt), "prompt_chars": len(prompt),
+            "timeout_s": timeout_s,
         })
-        res.update(meta or {})
+        res.update(meta)
+        self.trace.emit("worker-start", role=role, stage=meta.get("stage"),
+                        slot=meta.get("slot"), model=model, attempt=attempt,
+                        prompt_bytes=len(prompt.encode("utf-8")),
+                        prompt_sha256=res["promptSha256"])
         try:
+            # BINARY pipes on purpose (see the docstring): decoding is done
+            # once, at the end, with errors="replace", so no byte sequence a
+            # worker can emit is able to kill a reader thread mid-drain.
             proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True)
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except OSError as exc:
             res.update(ok=False, failure="spawn-failed", detail=str(exc))
             return res
-        try:
-            out, err = proc.communicate(prompt, timeout=timeout_s)
-            timed_out = False
-        except subprocess.TimeoutExpired:
+
+        activity = {"last": time.monotonic(), "ttfa_ms": None}
+        activity_lock = threading.Lock()
+        out_chunks, err_chunks = [], []
+        drain_errors = {}
+
+        def _drain(stream, chunks, label):
+            # Unconditional: read until EOF (b''), no matter what the main
+            # thread's timeout/kill logic is doing. This is the pipe side of
+            # the deadlock guarantee. ONE os.read() per iteration -- it
+            # returns on the FIRST available byte, which is what makes
+            # ttfa_ms/`worker-resume` truthful.
+            try:
+                fd = stream.fileno()
+                while True:
+                    chunk = os.read(fd, READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    with activity_lock:
+                        chunks.append(chunk)
+                        activity["last"] = time.monotonic()
+                        if activity["ttfa_ms"] is None:
+                            activity["ttfa_ms"] = int(
+                                (time.monotonic() - spawn_mono) * 1000)
+            except Exception as exc:                                  # noqa: BLE001
+                # Cannot be a decode error any more (binary reads), but an
+                # OSError on the fd still ends the drain early -- and a drain
+                # that ended early is output LOST, which must be declared,
+                # never swallowed the way `except (ValueError, OSError): pass`
+                # swallowed it.
+                drain_errors[label] = f"{type(exc).__name__}: {exc}"
+            finally:
+                try:
+                    stream.close()
+                except Exception:                                     # noqa: BLE001
+                    pass
+
+        def _feed_stdin():
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.write(prompt.encode("utf-8"))
+                    proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass                     # child may exit before reading stdin
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:                                     # noqa: BLE001
+                    pass
+
+        t_out = threading.Thread(target=_drain, args=(proc.stdout, out_chunks, "stdout"),
+                                 daemon=True)
+        t_err = threading.Thread(target=_drain, args=(proc.stderr, err_chunks, "stderr"),
+                                 daemon=True)
+        t_in = threading.Thread(target=_feed_stdin, daemon=True)
+        t_out.start()
+        t_err.start()
+        t_in.start()
+
+        timed_out = False
+        stall = {"in": False, "since": None}
+
+        def _note_resume(last):
+            """Renewed activity closes the episode -- ONLINE (the heartbeat is
+            what the orchestrator's no-analysis poll reads) and in L2 (the
+            anomaly is what `summary.json` carries)."""
+            stall["in"] = False
+            stalled_s = int(last - stall["since"])
+            self.hb("-", f"{role}-resume", f"resumed after {stalled_s}s")
+            self.trace.emit("worker-resume", role=role, attempt=attempt,
+                            stalled_s=stalled_s)
+            self._emit_stall_anomaly(
+                role, meta.get("stage"), attempt, stalled_s * 1000,
+                f"no output for {stalled_s}s, then resumed within budget")
+
+        deadline = spawn_mono + timeout_s
+        while True:
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                timed_out = True
+                break
+            # `proc.wait(timeout=...)` -- NOT poll()-then-sleep(1) -- so a
+            # process that exits well inside its ~1s slice is reaped the
+            # instant it does, rather than paying a full second of dead time
+            # per call. This gives the same ~1s stall-detection cadence for a
+            # genuinely slow call while costing a fast (e.g. mock) one
+            # nothing.
+            exited = False
+            try:
+                proc.wait(timeout=min(1.0, remaining))
+                exited = True
+            except subprocess.TimeoutExpired:
+                pass
+            # The liveness check runs on EVERY tick, INCLUDING the one the
+            # child exited on -- `break`ing straight out of the exit tick made
+            # `worker-resume` unreachable for any worker that resumes and then
+            # finishes inside the same second.
+            now = time.monotonic()
+            with activity_lock:
+                last = activity["last"]
+            age = now - last
+            if not stall["in"] and age > STALL_AFTER_S:
+                stall["in"] = True
+                stall["since"] = last
+                left = max(0, int(deadline - now))
+                self.hb("-", f"{role}-stall", f"no output {int(age)}s; budget left {left}s")
+                self.trace.emit("worker-stall", role=role, attempt=attempt,
+                                stage=meta.get("stage"),
+                                age_s=int(age), budget_left_s=left)
+            elif stall["in"] and last > stall["since"]:
+                _note_resume(last)
+            if exited:
+                break
+
+        if timed_out:
             proc.terminate()
             try:
-                out, err = proc.communicate(timeout=15)
+                proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                out, err = proc.communicate()
-            timed_out = True
+                proc.wait()
+        else:
+            proc.wait()
+
+        # Drain to completion and reap the readers/writer before touching
+        # their buffers. EOF on our read end arrives only when EVERY copy of
+        # the write end is closed -- so a reader still alive after this grace
+        # means some grandchild still holds the pipe and the buffer is a
+        # PARTIAL read that a live daemon thread is still appending to.
+        drain_deadline = time.monotonic() + DRAIN_JOIN_TIMEOUT_S
+        t_out.join(timeout=DRAIN_JOIN_TIMEOUT_S)
+        t_err.join(timeout=max(0.0, drain_deadline - time.monotonic()))
+        t_in.join(timeout=STDIN_JOIN_TIMEOUT_S)
+
+        # The final liveness word belongs HERE, after the readers were joined:
+        # bytes the child wrote just before exiting may not have reached the
+        # reader thread when `proc.wait()` returned, so whether the call ever
+        # resumed is only decidable once the drain is done. And a stall that
+        # never resumed still has to reach summary.json -- a call that died
+        # mid-silence is the most informative stall there is.
+        if stall["in"]:
+            with activity_lock:
+                last = activity["last"]
+            if last > stall["since"]:
+                _note_resume(last)
+            else:
+                stalled_s = int(max(0.0, time.monotonic() - stall["since"]))
+                ended = "timeout/SIGTERM" if timed_out else f"exit {proc.returncode}"
+                self._emit_stall_anomaly(
+                    role, meta.get("stage"), attempt, stalled_s * 1000,
+                    f"no output for {stalled_s}s; never resumed before the call "
+                    f"ended ({ended})")
+
+        truncated = [name for name, thread in (("stdout", t_out), ("stderr", t_err))
+                     if thread.is_alive()]
+        # Snapshot under the same lock the readers append under, so the join
+        # of a still-running buffer is at least internally consistent.
+        with activity_lock:
+            out = _decode_stream(out_chunks)
+            err = _decode_stream(err_chunks)
+            ttfa_ms = activity["ttfa_ms"]
         res["duration_ms"] = int(time.time() * 1000) - started_ms
         res["exit_code"] = proc.returncode
         res["stderr_tail"] = (err or "")[-800:]
+        res["ttfa_ms"] = ttfa_ms
+        res["truncated"] = bool(truncated) or bool(drain_errors)
+
+        if drain_errors:
+            res["drain_errors"] = dict(drain_errors)
+            detail = "; ".join(f"{k}: {v}" for k, v in sorted(drain_errors.items()))
+            self.warn(f"{role}: pipe drain error — output may be incomplete ({detail})")
+            self.trace.emit("worker-drain-error", role=role, stage=meta.get("stage"),
+                            attempt=attempt, streams=sorted(drain_errors), detail=detail)
+            self.trace.emit("anomaly", kind="output-truncated", role=role,
+                            stage=meta.get("stage"), attempt=attempt,
+                            ms=res["duration_ms"],
+                            detail=f"drain error on {', '.join(sorted(drain_errors))}: "
+                                   f"{detail}")
+        if truncated:
+            res["truncated_streams"] = truncated
+            self.warn(f"{role}: {'/'.join(truncated)} still open "
+                      f"{DRAIN_JOIN_TIMEOUT_S}s after the delegate was reaped — "
+                      f"a grandchild is holding the pipe; the drain is INCOMPLETE "
+                      f"and this call's output cannot be trusted as whole")
+            self.trace.emit("worker-truncated", role=role, stage=meta.get("stage"),
+                            attempt=attempt, streams=truncated,
+                            grace_s=DRAIN_JOIN_TIMEOUT_S,
+                            out_bytes=len(out.encode("utf-8")),
+                            err_bytes=len(err.encode("utf-8")))
+            self.trace.emit("anomaly", kind="output-truncated", role=role,
+                            stage=meta.get("stage"), attempt=attempt,
+                            ms=res["duration_ms"],
+                            detail=f"{'/'.join(truncated)} not drained to EOF within "
+                                   f"{DRAIN_JOIN_TIMEOUT_S}s of reaping the delegate")
+
         if timed_out:
             res.update(ok=False, failure="timeout",
                        detail=f"exceeded {timeout_s}s; SIGTERM sent")
+            return res
+        if res["truncated"]:
+            # Declared, not degraded. A partial stdout would ship a silently
+            # short report as the run's artifact; a partial stderr would hide a
+            # receipt line that WAS written and misclassify a real model call
+            # as `no-receipt`. Neither is an honest result, so this is a
+            # failure -- which run_worker retries once, exactly like any other
+            # infrastructure failure.
+            streams = truncated or sorted(drain_errors)
+            res.update(ok=False, failure="output-truncated",
+                       detail=f"drain incomplete on {', '.join(streams)}; "
+                              f"read {len(out.encode('utf-8'))}B stdout / "
+                              f"{len(err.encode('utf-8'))}B stderr before giving up — "
+                              f"the output cannot be proven complete")
             return res
         m = RECEIPT_LINE_RE.search(err or "")
         if not m:
@@ -535,6 +1005,7 @@ class Driver:
         res["cli"] = blob.get("cli")
         res["cliModel"] = blob.get("cliModel")
         res["receipt_exit_code"] = blob.get("exitCode")
+        res["receipt_duration_ms"] = blob.get("durationMs")
         if blob.get("promptSha256") != res["promptSha256"]:
             res.update(ok=False, failure="receipt-prompt-mismatch",
                        detail=f"receipt promptSha256={blob.get('promptSha256')!r} != "
@@ -551,8 +1022,9 @@ class Driver:
         return res
 
     def run_worker(self, role, model, prompt, view_dir, timeout_s, meta=None):
-        """One delegate call with ONE infrastructure retry (timeout, no receipt,
-        nonzero exit, empty output). Returns the last WorkerResult either way."""
+        """One delegate call with ONE infrastructure retry (timeout, truncated
+        drain, no receipt, nonzero exit, empty output). Returns the last
+        WorkerResult either way."""
         prompt = prompt.rstrip("\n")
         for attempt in (1, 2):
             res = self._run_once(role, model, prompt, view_dir, timeout_s, attempt, meta)
@@ -634,8 +1106,14 @@ class Driver:
         """Run one of the skill's own deterministic scripts. A non-expected exit
         is a hard stop with the script's stderr attached -- never swallowed."""
         cmd = [self.python, str(self.skill_dir / rel_script)] + [str(a) for a in script_args]
+        t0 = time.monotonic()
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               env={**os.environ, **(env or {})})
+        wall_ms = int(round((time.monotonic() - t0) * 1000))
+        self.trace.emit("script", name=Path(rel_script).name,
+                        argv_tail=" ".join(str(a) for a in script_args)[:200],
+                        exit=proc.returncode, wall_ms=wall_ms,
+                        stdout_bytes=len((proc.stdout or "").encode("utf-8")))
         if proc.returncode not in expect:
             raise DriverError(
                 f"script-failed:{Path(rel_script).name}",
@@ -786,9 +1264,17 @@ class Driver:
         hist.mkdir(parents=True, exist_ok=True)
         snap = hist / f"{self.asof}.json"
         if not snap.exists():
+            script_rel = "scripts/batch/snapshot_holdings.py"
+            argv = [str(hist), self.asof]
+            t0 = time.monotonic()
             proc = subprocess.run(
-                [self.python, str(self.skill_dir / "scripts/batch/snapshot_holdings.py"),
-                 str(hist), self.asof], capture_output=True, text=True)
+                [self.python, str(self.skill_dir / script_rel)] + argv,
+                capture_output=True, text=True)
+            wall_ms = int(round((time.monotonic() - t0) * 1000))
+            self.trace.emit("script", name=Path(script_rel).name,
+                            argv_tail=" ".join(argv)[:200],
+                            exit=proc.returncode, wall_ms=wall_ms,
+                            stdout_bytes=len((proc.stdout or "").encode("utf-8")))
             if proc.returncode != 0 or not snap.exists():
                 empty = hist / f"{self.asof}-unavailable.json"
                 empty.write_text(json.dumps({"holdings": []}), encoding="utf-8")
@@ -1240,7 +1726,14 @@ class Driver:
              "mode": "mock" if self.mock else "live",
              "calls": self.call_records}, indent=2) + "\n")
         self.write(MANIFEST_FILE, self._manifest())
-        self.write("80-ledger-row.json", json.dumps(self._ledger_row(), indent=2) + "\n")
+        # Computed ONCE and cached: write_state() (called right after this,
+        # for the SAME terminal state) independently calls _ledger_row() too,
+        # and its "wall_s" field is a fresh time.time() snapshot each call --
+        # two calls a few ms apart can straddle a round(x, 1) boundary and
+        # disagree. _final_ledger_row makes the two the same dict, not two
+        # closely-timed measurements of it.
+        self._final_ledger_row = self._ledger_row()
+        self.write("80-ledger-row.json", json.dumps(self._final_ledger_row, indent=2) + "\n")
         self.stage_end("ok")
 
     def _ledger_row(self):
@@ -1339,6 +1832,16 @@ class Driver:
         # A terminal state write means the run is over: the stage view dirs
         # (one of which holds the writer's copy of 15-position.*) must not
         # outlive it, on the failure paths as much as on the clean one.
+        #
+        # Profiler I/O (trace run-end + summary.json) runs at the very BOTTOM
+        # of this method, after the state file is written -- not here. This
+        # method's `wall`/`_ledger_row()` timing must stay byte-for-byte what
+        # it was before the profiler existed: `finish()` already called
+        # `_ledger_row()` once (for `80-ledger-row.json`) and this method
+        # calls it again independently (each a fresh `time.time()`), so any
+        # extra work inserted ABOVE this point widens that gap and can flip
+        # `round(wall_s, 1)` between the two -- exactly the flake this
+        # ordering exists to avoid.
         if exit_code is not None:
             self.cleanup_views()
         wall = round(time.time() - self.started, 1)
@@ -1347,7 +1850,11 @@ class Driver:
         # explicit error rather than either fabricating a row or losing the whole
         # state file to a second exception on an error path.
         ledger_row, ledger_row_error = None, None
-        if self.exists("55-rating-block.md"):
+        if self._final_ledger_row is not None:
+            # finish() already computed and wrote this to 80-ledger-row.json;
+            # reuse the SAME dict rather than recomputing (see finish()).
+            ledger_row = self._final_ledger_row
+        elif self.exists("55-rating-block.md"):
             try:
                 ledger_row = self._ledger_row()
             except DriverError as exc:
@@ -1377,6 +1884,12 @@ class Driver:
             "qa": self.qa,
             "notes": self.notes,
             "receipt_count": len(self.call_records),
+            # Purely-observational instrumentation that failed to write. It
+            # never fails the run (Trace.emit swallows I/O errors), so it has
+            # to be DECLARED here or the degradation would be invisible.
+            "trace_degraded": bool(self.trace.degraded),
+            "trace_degraded_reason": self.trace.degraded_reason,
+            "trace_events_dropped": self.trace.dropped_events,
             "ledger_row": ledger_row,
             "ledger_row_error": ledger_row_error,
             "ledger_appended": False,
@@ -1385,7 +1898,30 @@ class Driver:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.p(STATE_FILE).write_text(json.dumps(state, indent=2) + "\n",
                                       encoding="utf-8")
+        if exit_code is not None:
+            self.trace.emit("run-end", status=status, exit_code=exit_code,
+                            wall_ms=int(round(wall * 1000)))
+            self._write_trace_summary()
         return state
+
+    def _write_trace_summary(self):
+        """`trace/summary.json`, computed by trace.py's pure `summarize()` --
+        the SAME function trace.py's own `summary` command falls back to when
+        summary.json is missing (a run killed mid-flight, criterion 9), so the
+        two can never disagree. Never raises: a bug in this purely-additive
+        instrumentation must not take down the run it is only observing."""
+        try:
+            events = trace_mod.read_events(self.trace.path)
+            summary = trace_mod.summarize(events)
+            # Same declaration as DRIVER-STATE.json: a summary computed from a
+            # trace with holes in it must say so, or it reads as complete.
+            summary["trace_degraded"] = bool(self.trace.degraded)
+            if self.trace.degraded:
+                summary["trace_degraded_reason"] = self.trace.degraded_reason
+                summary["trace_events_dropped"] = self.trace.dropped_events
+            self.write("trace/summary.json", json.dumps(summary, indent=2) + "\n")
+        except Exception as exc:                                    # noqa: BLE001
+            self.warn(f"could not write trace/summary.json: {exc}")
 
     # --- small helpers -----------------------------------------------------
 
@@ -1571,6 +2107,11 @@ class Driver:
         self.hb("0", "driver-start",
                 f"ticker={self.ticker} run_dir={self.run_dir} "
                 f"mode={'MOCK' if self.mock else 'live'}")
+        self.trace.emit("run-start", schema=1, run_id=self.run_id,
+                        driver_version=DRIVER_VERSION,
+                        mode="mock" if self.mock else "live",
+                        ticker=self.ticker, routing=self.routing,
+                        routing_sha256=self.routing_sha256)
         if self.mock:
             self.warn("MOCK MODE: stage 1 is seeded from a fixture and every worker "
                       "is the override command — no vendor and no model is called. "
@@ -1709,6 +2250,7 @@ def main(argv=None):
         # a run whose state write itself blew up must still not leave copies of
         # 15-position.* in system temp.
         driver.cleanup_views()
+        driver.trace.close()
 
 
 def _run_driver(driver):
