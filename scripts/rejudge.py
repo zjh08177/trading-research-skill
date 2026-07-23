@@ -190,7 +190,7 @@ def _stdev(xs):
     return statistics.pstdev(xs) if len(xs) >= 2 else 0.0
 
 
-def ablate(run_dirs, models, worker, jobs, timeout_s, out_path):
+def ablate(run_dirs, models, worker, jobs, timeout_s, out_path, checkpoint=None):
     # Build the two prompts per run up front.
     tasks = []   # (run_name, arm, slot, model, prompt)
     per_run = {}
@@ -215,9 +215,25 @@ def ablate(run_dirs, models, worker, jobs, timeout_s, out_path):
         print("no runnable bundles", file=sys.stderr)
         return 2
 
-    print(f"ablating {len(per_run)} runs × 2 arms × {len(models)} judges = "
-          f"{len(tasks)} judge calls (jobs={jobs})", file=sys.stderr)
+    # Call-level checkpoint (JSONL): each completed judge call is appended
+    # immediately, so a killed run loses nothing — a relaunch skips calls
+    # already recorded. This ablation is long (opus-max judges ~200s each).
     results = {}   # (run, arm, slot) -> (text, model)
+    if checkpoint and os.path.exists(checkpoint):
+        with open(checkpoint) as f:
+            for ln in f:
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                results[(r["run"], r["arm"], r["slot"])] = (r["text"], r["model"])
+        print(f"resumed {len(results)} calls from checkpoint {checkpoint}", file=sys.stderr)
+    tasks = [t for t in tasks if (t[0], t[1], t[2]) not in results]
+
+    print(f"ablating {len(per_run)} runs × 2 arms × {len(models)} judges; "
+          f"{len(tasks)} calls left to run (jobs={jobs})", file=sys.stderr)
+    ck = open(checkpoint, "a") if checkpoint else None
+    ck_lock = __import__("threading").Lock()
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         futs = {pool.submit(run_judge, worker, model, prompt, timeout_s):
                 (name, arm, slot, model)
@@ -227,9 +243,16 @@ def ablate(run_dirs, models, worker, jobs, timeout_s, out_path):
             name, arm, slot, model = futs[fut]
             text, ok, detail = fut.result()
             results[(name, arm, slot)] = (text if ok else None, model)
+            if ck is not None:
+                with ck_lock:
+                    ck.write(json.dumps({"run": name, "arm": arm, "slot": slot,
+                                         "model": model, "text": text if ok else None}) + "\n")
+                    ck.flush()
             done += 1
             print(f"  [{done}/{len(tasks)}] {name}/{arm}/slot{slot} {model}: {detail}",
                   file=sys.stderr)
+    if ck is not None:
+        ck.close()
 
     tmpdir = tempfile.mkdtemp(prefix="rejudge-tally-")
     flips, full_disp, tmpl_disp = 0, [], []
@@ -384,6 +407,7 @@ def main(argv=None):
             s.add_argument("--worker", default=DEFAULT_WORKER)
             s.add_argument("--jobs", type=int, default=6)
             s.add_argument("--timeout", type=int, default=600)
+            s.add_argument("--checkpoint", help="JSONL: append each judge call; resume on relaunch")
     args = p.parse_args(argv)
 
     run_dirs = select_runs(args.archive, args.n, args.runs)
@@ -392,7 +416,7 @@ def main(argv=None):
         return 2
     if args.cmd == "ablate":
         return ablate(run_dirs, args.models, args.worker, args.jobs,
-                      args.timeout, args.out)
+                      args.timeout, args.out, args.checkpoint)
     return faithfulness(run_dirs, args.out)
 
 
