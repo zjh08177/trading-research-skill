@@ -32,9 +32,18 @@ import distillers  # noqa: E402 - distiller contract (R1-R5, tech-solution §3)
 # This keeps the live (non-replay) path byte-identical to today.
 _DEFAULT_LEDGER = ("/Users/bytedance/Library/Mobile Documents/iCloud~md~obsidian/Documents/"
                     "second-brain/Projects/personal/tradingagents/reports/ledger.jsonl")
-_DEFAULT_ASOF = "2026-07-05"
+# A1 (fixed 2026-07-18): --asof used to default to the frozen literal "2026-07-05".
+# Any caller who omitted the flag silently got a HISTORICAL REPLAY of a long-past
+# date -- correctly classified as replay by mode_for_cutoff(), rendered with
+# two-week-old prices, and exited 0 with no warning anywhere. Observed cost: a
+# 32-ticker batch built entirely against a stale cutoff. A date default must never
+# be a frozen literal; today is the only safe default for a live-mode tool.
+_DEFAULT_ASOF = dt.date.today().isoformat()
 _DEFAULT_STAMP = "1300"
-_DEFAULT_HOLD = "/Users/bytedance/.claude/jobs/f5e850a4/tmp/holdings.json"
+# A2: this pointed at a per-job tmp path that no longer exists. Combined with the
+# old flat-safe loader it meant "silently report every position as flat". There is
+# no safe default for the live book -- require it explicitly.
+_DEFAULT_HOLD = None
 
 LEDGER = _DEFAULT_LEDGER
 ASOF = _DEFAULT_ASOF
@@ -428,16 +437,108 @@ def render_md(ticker, kind, facts, gaps, degraded, xline, p7):
     return "\n".join(lines) + "\n", run_id
 
 
+P9_ORDER = ["stretch", "percentile", "volume_climax", "move_cluster",
+            "move_base_rate", "exhaustion"]
+# stretch takes a bare datapack; every other P9 script wants (datapack, history).
+P9_WANTS_HISTORY = {"stretch": False, "percentile": True, "volume_climax": True,
+                    "move_cluster": True, "move_base_rate": True, "exhaustion": True}
+
+
+def build_p9(ticker, run_dir, base_facts):
+    """Stage 1c: left-side / mean-reversion signals (A4).
+
+    Order is load-bearing: exhaustion.py reads P9 facts the earlier five merged,
+    so it runs LAST (SKILL.md Stage 1c). Each script is merged into the pack as it
+    succeeds, so exhaustion sees its inputs. Returns (facts, gaps); a failure is a
+    named MISSING(P9, reason) gap and the run continues -- recent listings legitimately
+    lack an SMA200 or the 250 bars move_base_rate needs.
+    """
+    hist_path = f"{run_dir}/11-history.json"
+    ex, hist, err = run_cli("tiingo_history", ["--ticker", ticker, "--asof", ASOF])
+    have_history = (ex == 0 and bool(hist))
+    if have_history:
+        with open(hist_path, "w") as fh:
+            json.dump(hist, fh)
+    else:
+        skipped = [s for s in P9_ORDER if P9_WANTS_HISTORY[s]]
+        gaps_hist = (f"P9 MISSING(history: tiingo_history {str(err)[:80]} — "
+                     f"{', '.join(skipped)} skipped; history-free P9 scripts still ran)")
+
+    # The P9 scripts read P1/P2 facts (stretch needs sma50/sma200/atr14), so the
+    # scratch pack must start from the FULL pack, not an empty accumulator -- seeding
+    # it with only P9-so-far made 5 of 6 scripts exit 3 on missing facts.
+    merged = dict(base_facts)
+    facts, gaps = {}, ([] if have_history else [gaps_hist])
+    pack_path = f"{run_dir}/.p9-pack.json"
+    for script in P9_ORDER:
+        if P9_WANTS_HISTORY[script] and not have_history:
+            continue          # disclosed once via gaps_hist, not per-script
+        with open(pack_path, "w") as fh:      # merged-so-far view for the next script
+            json.dump(merged, fh)
+        cmd = [PY, f"{SK}/scripts/{script}.py", pack_path]
+        if P9_WANTS_HISTORY[script]:
+            cmd.append(hist_path)
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.returncode != 0:
+            gaps.append(f"P9 MISSING({script}: {p.stderr.strip().splitlines()[:1]})")
+            continue
+        try:
+            new = json.loads(p.stdout)
+            facts.update(new)
+            merged.update(new)
+        except json.JSONDecodeError as e:
+            gaps.append(f"P9 MISSING({script}: unparseable stdout: {e})")
+    if os.path.exists(pack_path):
+        os.remove(pack_path)
+    if not facts:
+        gaps.append("MISSING(P9): no left-side signals computed; treat every "
+                    "left-side/mean-reversion question as a DATA GAP and never "
+                    "cite a [P9.*] tag")
+    return facts, gaps
+
+
 def _load_holdings(path):
-    """Flat-safe holdings loader: a missing/unreadable/malformed holdings file
-    yields {"holdings": []} (every ticker resolves flat) with a stderr
-    warning, instead of crashing main() (findings: HOLD path can go stale)."""
+    """Load the holdings book. FAILS CLOSED (A2, fixed 2026-07-18).
+
+    This used to swallow every error and return {"holdings": []}, which renders
+    as "every ticker is flat" -- indistinguishable in the pack from a genuinely
+    empty book. A stale path or a permissions blip therefore silently stripped
+    the position section from every report while the run still exited 0. A book
+    we cannot read is an ERROR, not an empty book.
+
+    Also accepts BOTH holdings shapes (A3): the snapshot SSOT envelope written by
+    scripts/batch/snapshot_holdings.py -- {kind, schema, asof_date, vendor:{holdings}}
+    -- and the bare {"holdings": [...]} vendor dict. monitor_invalidations.py and
+    action_plan.py already unwrap the envelope; this path did not, so passing the
+    documented SSOT file raised KeyError: 'holdings'.
+    """
+    if not path:
+        print("ERROR: --holdings is required for a live position-aware run. There is "
+              "no safe default: the old one pointed at a stale per-job tmp path, and "
+              "combined with the old flat-safe loader it silently reported every "
+              "position as flat. Pass the snapshot SSOT written by "
+              "scripts/batch/snapshot_holdings.py.", file=sys.stderr)
+        sys.exit(4)
     try:
-        return json.load(open(path))
+        with open(path) as fh:
+            raw = json.load(fh)
     except (FileNotFoundError, OSError, json.JSONDecodeError) as e:
-        print(f"WARNING: holdings file unavailable ({path}): {e}; all positions flat",
+        print(f"ERROR: holdings file unreadable ({path}): {e}. Refusing to run: a "
+              f"missing book is not an empty book, and would silently drop the "
+              f"position section from every report. Pass a valid --holdings path, "
+              f"or a file containing an explicit empty book to run flat.",
               file=sys.stderr)
-        return {"holdings": []}
+        sys.exit(4)
+
+    # Envelope -> vendor payload (A3).
+    if isinstance(raw, dict) and "holdings" not in raw and isinstance(raw.get("vendor"), dict):
+        raw = raw["vendor"]
+    if not isinstance(raw, dict) or not isinstance(raw.get("holdings"), list):
+        print(f"ERROR: holdings file {path} has neither a 'holdings' list nor a "
+              f"'vendor.holdings' list; refusing to treat it as an empty book.",
+              file=sys.stderr)
+        sys.exit(4)
+    return raw
 
 
 def build_position(ticker, holdings):
@@ -505,6 +606,14 @@ def main(argv=None):
             run_dir = f"{RUNS}/{ticker}-{ASOF}-{STAMP}"
             os.makedirs(run_dir, exist_ok=True)
             facts, gaps, degraded, xline = build_facts(ticker, kind, args.options)
+            # A4 (fixed 2026-07-18): Stage 1c was never implemented on the BATCH path,
+            # so every batch pack shipped without P9 left-side/mean-reversion signals
+            # while SKILL.md documents them as a pipeline stage. Judges were told to
+            # cite [P9.exhaustion_tally] for facts that did not exist. A failure here
+            # is a named MISSING(P9) gap, never a silent absence.
+            p9_facts, p9_gaps = build_p9(ticker, run_dir, facts)
+            facts.update(p9_facts)
+            gaps.extend(p9_gaps)
             p7 = run_ledger(ticker)
             md, run_id = render_md(ticker, kind, facts, gaps, degraded, xline, p7)
             json.dump(facts, open(f"{run_dir}/10-datapack.json", "w"), indent=1)
@@ -513,9 +622,15 @@ def main(argv=None):
             json.dump(hf, open(f"{run_dir}/15-position.json", "w"), indent=1)
             open(f"{run_dir}/15-position.md", "w").write(hmd)
             open(f"{run_dir}/00-scope.md", "w").write(
-                f"# Scope\n- Query: portfolio holding deep-dive (top-10 combined book).\n"
+                # A6: this line used to hardcode a fixed weekday, a fixed settle date, and
+                # "top-10" -- all stale literals from an old run, printed regardless of
+                # the real as-of. Derive weekday from ASOF and settle from the pack.
+                f"# Scope\n- Query: portfolio holding deep-dive ({len(tickers)}-ticker combined book).\n"
                 f"- Job class: J1 single-name deep dive, POSITION-AWARE.\n"
-                f"- Ticker: {ticker} · kind: {kind} · As-of: {ASOF} (Sunday; market closed, last settled 2026-07-02).\n")
+                f"- Ticker: {ticker} · kind: {kind} · As-of: {ASOF} "
+                f"({dt.date.fromisoformat(ASOF).strftime('%A')}; "
+                f"{'market closed' if dt.date.fromisoformat(ASOF).weekday() >= 5 else 'trading day'}"
+                f", last settled {facts.get('P1.price', {}).get('asof', 'UNKNOWN')}).\n")
             invocation_id = run_usage_start(ticker, kind, run_id, run_dir, batch_id, True)
             gate = "GATE-FAIL" if any("GATE FAIL" in g for g in gaps) else "ok"
             summary.append({"ticker": ticker, "kind": kind, "run_id": run_id, "run_dir": run_dir,
