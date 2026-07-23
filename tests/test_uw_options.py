@@ -179,3 +179,66 @@ def test_live_fact_carries_session_stamp():
     F, _ = build(data, spot=100)
     assert F["P8.nope"]["history"] == "live"
     assert F["P8.nope"]["session_state"] == "pre-open"
+
+
+# ---- Smart-money flow scoring (_score_flow / _dte) ----
+
+def _alert(**kw):
+    """A flow-alert row with sensible defaults; override any field via kwargs."""
+    base = {"type": "call", "strike": "100", "expiry": "2026-09-18",
+            "created_at": "2026-07-20T14:00:00Z", "volume": 1000,
+            "open_interest": 1000, "total_premium": "600000",
+            "total_ask_side_prem": "600000", "total_bid_side_prem": "0",
+            "has_sweep": False, "has_multileg": False,
+            "all_opening_trades": False, "alert_rule": "SingleHit",
+            "volume_oi_ratio": "1.0"}
+    base.update(kw)
+    return base
+
+
+def test_dte_calendar_days():
+    assert U._dte("2026-07-24", "2026-07-21T10:00:00Z", "2026-07-21") == 3
+    assert U._dte("2026-09-18", None, "2026-07-20") == 60
+    assert U._dte("bad", "also-bad", "2026-07-20") is None
+
+
+def test_score_flow_drops_below_premium_floor():
+    # Below $300k is ignored entirely (ignore tiny trades).
+    rows = U._score_flow([_alert(total_premium="299999")], spot=100, run_asof="2026-07-20")
+    assert rows == []
+
+
+def test_score_flow_premium_tiers():
+    big = U._score_flow([_alert(total_premium="1200000")], 100, "2026-07-20")[0]
+    mid = U._score_flow([_alert(total_premium="600000")], 100, "2026-07-20")[0]
+    assert "very-large-prem" in big[6] and big[0] > mid[0]
+    assert "preferred-prem" in mid[6]
+
+
+def test_score_flow_dte_and_signals():
+    # 60-120 DTE + vol>>OI + ask-side + sweep + opening + repeated => high score.
+    a = _alert(expiry="2026-09-18", created_at="2026-07-20T14:00:00Z",
+               volume=5000, open_interest=300, volume_oi_ratio="16.7",
+               has_sweep=True, all_opening_trades=True,
+               alert_rule="RepeatedHitsAscendingFill")
+    row = U._score_flow([a], 100, "2026-07-20")[0]
+    tags = row[6]
+    assert "dte-best" in tags and "new-positioning" in tags
+    assert "ask-side" in tags and "sweep" in tags
+    assert "opening" in tags and "repeated" in tags
+    assert row[0] >= 70
+
+
+def test_score_flow_penalizes_short_dte_and_closing():
+    a = _alert(expiry="2026-07-22", created_at="2026-07-21T14:00:00Z",
+               volume=100, open_interest=5000, volume_oi_ratio="0.02")
+    row = U._score_flow([a], 100, "2026-07-21")[0]
+    assert "dte-short" in row[6] and "maybe-closing" in row[6]
+
+
+def test_score_flow_is_context_list_snapshot():
+    data = {"flow-alerts": [_alert(total_premium="900000", has_sweep=True)],
+            "stock-state": {"market_time": "pm", "tape_time": f"{_today()}T08:00:00Z"}}
+    F, _ = build(data, spot=100)
+    assert F["P8.smart_flow"]["unit"] == "list"       # context-only, never number-tagged (O3)
+    assert F["P8.smart_flow"]["history"] == "snapshot"  # independent of live session

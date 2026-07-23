@@ -47,6 +47,8 @@ LISTS = [
     ("P8.max_pain_by_expiry", "Max pain by expiry", ["Expiry", "Max pain"]),
     ("P8.oi_walls", "Open-interest walls", ["Expiry", "OI", "Volume"]),
     ("P8.flow_alerts", "Unusual flow alerts", ["Type", "Strike", "Expiry", "Volume"]),
+    ("P8.smart_flow", "Smart-money flow (scored)",
+     ["Score", "Type", "Strike", "Expiry", "Premium", "DTE", "Signals"]),
 ]
 
 HIST = {"daily": "daily", "snapshot": "snapshot", "live": "live"}
