@@ -45,6 +45,8 @@ DEFAULT_JUDGES = ["gpt-5.5-extra-high", "claude-opus-4-8-thinking-max", "glm-5.2
 DEFAULT_WORKER = os.path.expanduser("~/.agent/bin/cursor-delegate.sh")
 RISKBOX_END = "<!-- riskbox-block: end -->"
 RISK_SECTION_HEADER = "## RISK OFFICER"
+# render_risk.py's signature line — marks a post-cutover deterministic risk artifact.
+RENDER_SIGNATURE = "templated deterministically from the box and pack (Feature 21 WS-A)"
 
 HEADLESS_PREAMBLE = (
     "You are running HEADLESS in a read-only workspace. Your ENTIRE stdout "
@@ -350,6 +352,12 @@ def select_runs(archive, n, explicit):
     usable = []
     for rd in cand:
         if reconstruct_bundle(rd) is None:
+            continue
+        # Skip post-cutover runs whose 40-risk.md is ALREADY a deterministic
+        # render — swapping it for a fresh render is a no-op (guaranteed no-flip),
+        # which would deflate the flip rate. The gate must sample LLM-risk runs only.
+        risk = (rd / "40-risk.md").read_text(encoding="utf-8", errors="replace")
+        if RENDER_SIGNATURE in risk:
             continue
         try:
             render_template_risk(rd)
