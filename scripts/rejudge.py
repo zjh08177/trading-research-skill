@@ -399,6 +399,7 @@ def main(argv=None):
     for cmd in ("ablate", "faithfulness"):
         s = sub.add_parser(cmd)
         s.add_argument("runs", nargs="*", help="explicit run dirs (else use --archive/--n)")
+        s.add_argument("--runs-file", help="file of run dirs, one per line (stable pinned set)")
         s.add_argument("--archive", help="runs/ dir to auto-select from")
         s.add_argument("--n", type=int, help="how many recent bundles to sample")
         s.add_argument("--out", help="write JSON summary here too")
@@ -410,7 +411,11 @@ def main(argv=None):
             s.add_argument("--checkpoint", help="JSONL: append each judge call; resume on relaunch")
     args = p.parse_args(argv)
 
-    run_dirs = select_runs(args.archive, args.n, args.runs)
+    explicit = list(args.runs)
+    if args.runs_file:
+        explicit += [ln.strip() for ln in pathlib.Path(args.runs_file).read_text().splitlines()
+                     if ln.strip()]
+    run_dirs = select_runs(args.archive, args.n, explicit)
     if not run_dirs:
         print("no run dirs selected", file=sys.stderr)
         return 2
