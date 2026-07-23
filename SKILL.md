@@ -34,7 +34,7 @@ artifacts are the only channel between stages.
 | 3a Bull | Agent tool | sonnet | pack + analyst briefs | `30-debate.md` (Bull case section) |
 | 3b Bear | Agent tool, runs AFTER 3a completes | sonnet | pack + analyst briefs + 3a's bull section | `30-debate.md` (Bear case section, appended) |
 | 4a Risk box (computed) | `scripts/risk_box.py` | — | `10-datapack.json` | `40-riskbox-block.md` (inserted into report VERBATIM) |
-| 4b Risk narrative | risk-officer agent | sonnet | pack + debate + `40-riskbox-block.md` | `40-risk.md` (leads with the verbatim block, then narration) |
+| 4b Risk officer (computed) | `scripts/render_risk.py` | — | `10-datapack.json` | `40-risk.md` (verbatim box + **templated** 1R-stop/event-risk/concentration; Feature 21 WS-A — deterministic, pack-only + position-blind, depends only on the pack so it may run parallel with the Stage-2 analysts) |
 | 5 Ensemble | N judge agents, parallel, byte-identical inputs | opus | pack + briefs + debate + `40-risk.md` (leads with the verbatim risk box) + guarded track record | `50-votes/vote-{1..N}.md` |
 | 5b Tally | `scripts/ensemble.py` | — | votes | `55-rating-block.md` (inserted into report VERBATIM) |
 | 6b Mean-reversion block render | `scripts/render_meanrev.py` | — | `10-datapack.json` | `53-meanrev-block.md` (inserted into report VERBATIM) |
@@ -163,7 +163,7 @@ call.
 | 13 | Account access is read-only across every position source: the CLIs list accounts + positions only (SnapTrade `list_user_accounts` + `get_all_account_positions`; the dormant `schwab_account.py` uses Schwab `GET /accounts`). No order, trade, or mutation endpoint is ever referenced. | CLIs hold no order path; `test_schwab_account.py` + `test_snaptrade_account.py` assert absence |
 | 14 | Position is live-only: a past/future `--asof` yields no position (exit 3), never a fabricated historical holding. | `snaptrade_account.py` (active) / `schwab_account.py` (dormant) `--asof` guard (parsed dates vs today) |
 | 15 | The position never changes the headline call — only the action framing around it. A "Your Position" section that argues the rating is a defect. | writer role card; QA prose pass |
-| 16 | The risk box's adverse-move, invalidation, and context numbers come only from `risk_box.py`, inserted verbatim as `40-riskbox-block.md`; the risk officer narrates around it and never recomputes them. The block is context-only — never an action/size, never changes the rating. | `risk_box.py` emits the block; officer card forbids recompute; `qa_check.py` exempts the verbatim region |
+| 16 | The risk box's adverse-move, invalidation, and context numbers come only from `risk_box.py`, inserted verbatim as `40-riskbox-block.md`. The whole risk officer artifact `40-risk.md` (verbatim box + templated 1R/event/concentration narration) is now produced deterministically by `render_risk.py` from the pack ALONE (Feature 21 WS-A): no LLM, no recompute, position-blind (invariant 12). The block is context-only — never an action/size, never changes the rating. | `risk_box.py` + `render_risk.py` emit the artifacts; `40-risk.md` is byte-equal to `render_risk.py` output by construction; `qa_check.py` exempts the verbatim region |
 | 17 | Decision levels preserve execution qualifiers. Reports emit schema-v2 `LEVELS_JSON` with comparison, action strength, rating gate, and confirmation conditions. A crossed level is never automatically an execution instruction: Hold-rated directional triggers are review-only, legacy `LEVELS:` is upgraded to safe review-first semantics, and action-plan rows use `ACT` only for `confirmed_act`. | `levels_schema.py`; `render_report.py`; `monitor_invalidations.py`; `action_plan.py`; `portfolio_delta.py`; `qa_check.py --strict` |
 | 19 | A counter-trend trigger (side opposing the dominant direction — a downside-Buy or upside-Sell/Trim) is never `action_strength="act"`, for any rating. A leveraged product's (`P0.leverage_objective` present) counter-trend trigger always carries a computed `decay_risk`. A `base_rate_cite` never appears without its `n_raw`/`n_regimes`/`n_macro` companions. | `levels_schema.validate_level_set()`; hard-fails `qa_check.py` and `render_report.py` (never a warning, never convention-only) |
 
@@ -325,14 +325,22 @@ published via the Artifact tool — that flow is for reports only.
 
 ## Risk box (computed)
 
-Before spawning the risk officer, run `<SKILL_DIR>/.venv/bin/python scripts/risk_box.py
-10-datapack.json > 40-riskbox-block.md`. It computes the adverse move (ATR14 / 30d σ
-multiples), the today-move/ATR ratio, the SMA50±ATR invalidation anchor, and a
-NORMAL/ABNORMAL context flag from pack facts — the numbers the officer used to
-compute by hand (the FIND-1 surface). A missing required fact → exit 3 (fail loud).
-Pass the block to the officer, who narrates around it and never recomputes it, and
-insert it VERBATIM into the report's `## Risk box` slot. The block is context-only:
-it never states an action or size and never changes the rating (invariant 16).
+Run `<SKILL_DIR>/.venv/bin/python scripts/risk_box.py 10-datapack.json > 40-riskbox-block.md`.
+It computes the adverse move (ATR14 / 30d σ multiples), the today-move/ATR ratio, the
+SMA50±ATR invalidation anchor, and a NORMAL/ABNORMAL context flag from pack facts. A
+missing required fact → exit 3 (fail loud). Insert the block VERBATIM into the report's
+`## Risk box` slot. The block is context-only: it never states an action or size and
+never changes the rating (invariant 16).
+
+**Feature 21 WS-A — the risk officer is now deterministic (no LLM).** Instead of spawning
+a risk-officer agent, run `scripts/render_risk.py 10-datapack.json > 40-risk.md`. It emits
+the complete `40-risk.md` — the verbatim box, then a **templated** narration (the 1R-stop
+implication, the P5-earnings event-risk line, and a position-blind concentration principle),
+all rule-derived; anything not rule-derivable is dropped, not paraphrased. It reads the pack
+ALONE — never `15-position.json` (invariant 12: `40-risk.md` feeds the judge bundle and must
+stay position-blind) — so it depends only on Stage 1 and may run parallel with the analysts.
+`40-risk.md` is byte-equal to `render_risk.py` output. The old `## Risk officer` role card in
+`references/prompts.md` is retired.
 
 ## Options analysis (`--options` / `--options-only`)
 

@@ -132,6 +132,13 @@ fundamentally justified" — no quotes) so a faithful paraphrase is never
 mistaken for a misquote.
 ```
 
+> **`## Risk officer` below is RETIRED (Feature 21 WS-A, 2026-07-23).** The risk
+> officer is no longer an LLM agent — `40-risk.md` is produced deterministically by
+> `scripts/render_risk.py` (verbatim box + templated 1R/event/concentration, pack-only,
+> position-blind). The card is retained only so the role-card parser stays complete; the
+> driver no longer spawns it. Do not re-introduce an LLM risk narration without re-running
+> the Feature 21 Gate 1 ablation.
+
 ## Risk officer
 
 ```

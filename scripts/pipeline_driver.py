@@ -65,6 +65,10 @@ EXIT_ABSTAIN = 20
 EXIT_BAD_INVOCATION = 2
 
 DRIVER_VERSION = "1.0"
+# Judge-input-bytes contract version. BUMP whenever what the judges read changes,
+# so pre/post-cutover ledger rows are never pooled for calibration. "risk-det-1" =
+# Feature 21 WS-A: the risk officer is a deterministic render (render_risk.py).
+PIPELINE_VERSION = "risk-det-1"
 STATE_FILE = "DRIVER-STATE.json"
 MANIFEST_FILE = "RUN-MANIFEST.md"
 RECEIPTS_FILE = "receipts.json"
@@ -1753,7 +1757,8 @@ class Driver:
             except ValueError:
                 stats = {}
         row = {
-            "run_id": self.run_id, "ticker": self.ticker,
+            "run_id": self.run_id, "pipeline_version": PIPELINE_VERSION,
+            "ticker": self.ticker,
             "date_utc": now_iso().replace("+00:00", "Z"), "as_of": self.asof,
             "job": "J1 full single-ticker equity research (no --options)",
             "mode_rating": "NO-CALL" if no_call else dec.get("mode_label"),
