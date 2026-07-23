@@ -39,12 +39,23 @@ def parse_vote(path):
     None if malformed. Leading header lines are consumed first; a header-only
     file (no VERDICT body) is malformed. A vote missing the ENTRY-PATH field
     (e.g. a stale 3-field vote) is malformed — it never silently degrades to
-    a 3-field parse."""
+    a 3-field parse.
+
+    A file containing MORE THAN ONE VERDICT line is malformed. Reading only
+    body[-1] would silently count the last-appended block, so a vote file that
+    got written twice (e.g. a delegate retry, or a fallback rung appending to a
+    path a previous rung already wrote) would have its verdict decided by append
+    order. Observed 2026-07-18: 23/32 slot-1 votes carried duplicate blocks, and
+    NASA (Hold->Sell) and XLE (Hold->Buy) self-disagreed across blocks, deciding
+    two headline ratings by concatenation order. Fail loud instead: the caller's
+    existing respawn-once path handles it."""
     lines = [ln.rstrip() for ln in path.read_text().splitlines() if ln.strip()]
     if not lines:
         return None
     model, body = parse_headers(lines)
     if not body:
+        return None
+    if sum(1 for ln in body if ln.strip().startswith("VERDICT:")) != 1:
         return None
     m = VERDICT_RE.match(body[-1].strip())
     if not m:
@@ -66,8 +77,23 @@ def collect(votes_dir):
     return votes, malformed
 
 
-def decide(spread, n_valid, n_target):
+def decide(spread, n_valid, n_target, n_malformed=0):
+    """Map (spread, n_valid) to publish / escalate / backfill / no-call.
+
+    A8 (2026-07-18): a thin panel caused by MALFORMED votes is an infrastructure
+    failure, not judge disagreement, and the two states deserve different answers.
+    Previously both fell through `n_valid < 3 -> no-call`, so one unparseable vote
+    threw away two perfectly good judgments and killed the ticker. Now, when the
+    panel is short ONLY because votes were malformed and at least one valid vote
+    survives, emit `backfill`: the orchestrator spawns replacement judges in the
+    unused slots (4, 5) to reach n_target, exactly as `escalate` already does.
+    Fail-closed is preserved -- if backfill cannot reach 3 valid votes, the next
+    tally still returns no-call. n_malformed defaults to 0, so every existing
+    caller keeps its current behaviour.
+    """
     if n_valid < 3:
+        if n_malformed > 0 and n_valid > 0:
+            return "backfill"
         return "no-call"
     if n_target >= 5:
         return "no-call" if spread >= 3 else "publish"
@@ -87,7 +113,7 @@ def render(votes, malformed, n_target):
     judge_mix = [v[5] for v in votes]
     counts = Counter(v[0] for v in votes)
     spread = (max(counts) - min(counts)) if votes else 0
-    decision = decide(spread, n_valid, n_target)
+    decision = decide(spread, n_valid, n_target, len(malformed))
     notches = [v[0] for v in votes]
     mode = mode_notch(notches) if votes else None
     median_notch = float(statistics.median(notches)) if votes else None
@@ -99,6 +125,9 @@ def render(votes, malformed, n_target):
                 "**NO-CALL** — unresolved split (spread ≥ 3 at N=5)")
     elif decision == "escalate":
         head = f"**{LABEL[mode]}** — provisional, escalating to N=5"
+    elif decision == "backfill":
+        head = (f"**{LABEL[mode]}** — PROVISIONAL, thin panel (N={n_valid} valid, "
+                f"{len(malformed)} malformed); backfilling replacement judges")
     else:
         head = f"**{LABEL[mode]}**"
 

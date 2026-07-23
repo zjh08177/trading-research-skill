@@ -397,11 +397,19 @@ Options invariants (enforce alongside 1–17):
 ## Ensemble tally
 
 Spawn N=3 judges, write each vote to `50-votes/vote-<i>.md` ending in exactly one
-`VERDICT: … | CONVICTION: … | WHY: …` line, then run `ensemble.py tally 50-votes
+`VERDICT: … | CONVICTION: … | ENTRY-PATH: … | WHY: …` line, then run `ensemble.py tally 50-votes
 --n-target 3`. Act on the JSON decision on stderr: `escalate` → spawn 2 more
 judges and re-run with `--n-target 5`; `no-call` → publish the distribution under
 a NO-CALL headline; `publish` → done. Respawn a malformed vote once, then drop and
 disclose it. Insert the emitted `55-rating-block.md` into the report verbatim.
+
+The verdict line is **4-field and `ensemble.py` enforces it**: a vote missing
+`ENTRY-PATH` is MALFORMED and silently discarded — it never degrades to a 3-field
+parse. A whole panel emitting the stale 3-field form therefore yields `n_valid: 0`
+and a NO-CALL on every ticker, with no error anywhere. The canonical judge card in
+`references/prompts.md` is the source of truth for this contract; copy it rather
+than re-typing the line. (Regression 2026-07-18: the batch pipeline carried the
+3-field form and produced 32 straight NO-CALLs from 96 well-formed votes.)
 
 ## Failure map
 
