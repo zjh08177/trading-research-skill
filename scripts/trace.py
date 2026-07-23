@@ -499,41 +499,20 @@ def cmd_operator(args):
     return 0
 
 
-def extract_operator(run_dir, rollout_path=None):
-    """(operator_dict, None) | (None, error_line). Locates, parses and caches
-    orchestrator cost from a Codex rollout log against a run's trace. Never
-    guesses: a missing rollout is a loud exit 3, not a fabricated number."""
-    run_dir = Path(run_dir)
-    events = read_events(run_dir / "trace" / "trace.jsonl")
-    run_start = next((e for e in events if e.get("ev") == "run-start"), None)
-    run_end = next((e for e in reversed(events) if e.get("ev") == "run-end"), None)
-    run_id = (run_start or {}).get("run_id")
+def parse_codex_rollout(rollout_path):
+    """Codex rollout jsonl -> the host-neutral operator INTERMEDIATE that every
+    host front-end returns (codex here; claude-code/cursor are siblings). This
+    is the ONLY codex-rollout-format-coupled parser; all the arithmetic lives
+    in host-agnostic compute_operator(). Token vocabulary is normalized HERE
+    (codex `input_tokens`/... -> the 4 canonical fields) so compute_operator
+    never sees a vendor's token key names.
 
-    if rollout_path is None:
-        home = Path(os.environ.get("HOME", str(Path.home())))
-        candidates = sorted(
-            glob.glob(str(home / ".codex" / "sessions" / "**" / "rollout-*.jsonl"),
-                      recursive=True),
-            key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
-            reverse=True)[:20]
-        found = None
-        if run_id:
-            needle = run_id.encode("utf-8")
-            for c in candidates:
-                try:
-                    if needle in Path(c).read_bytes():
-                        found = c
-                        break
-                except OSError:
-                    continue
-        if found is None:
-            return None, f"operator: no rollout found for {run_id!r}"
-        rollout_path = found
-
+    Intermediate schema:
+      {source: {kind, path, sha256, bytes, unparsed_lines},
+       model_requests: int, tokens: {input,cached_input,output,reasoning_output}|None,
+       turns: [{turn_id, wall_ms}], tool_durations: [{call_id, ms, input, output}],
+       first_task_started_t: iso|None, last_t: iso|None}"""
     rp = Path(rollout_path)
-    if not rp.exists():
-        return None, f"operator: rollout not found: {rp}"
-
     model_requests = 0
     tokens = None
     unparsed = 0
@@ -595,11 +574,40 @@ def extract_operator(run_dir, rollout_path=None):
                             "input": call.get("input") or "", "output": out_text or "",
                         })
 
+    norm_tokens = {
+        "input": tokens.get("input_tokens"),
+        "cached_input": tokens.get("cached_input_tokens"),
+        "output": tokens.get("output_tokens"),
+        "reasoning_output": tokens.get("reasoning_output_tokens"),
+    } if tokens else None
+    return {
+        "source": {"kind": "codex-rollout", "path": str(rp),
+                   "sha256": hashlib.sha256(rp.read_bytes()).hexdigest(),
+                   "bytes": rp.stat().st_size, "unparsed_lines": unparsed},
+        "model_requests": model_requests, "tokens": norm_tokens,
+        "turns": turns, "tool_durations": tool_durations,
+        "first_task_started_t": first_task_started_t, "last_t": last_t,
+    }
+
+
+def compute_operator(inter, run_dir, run_start, run_end, run_id):
+    """Host-AGNOSTIC: an operator intermediate (from ANY host front-end) ->
+    the operator.json dict. No filesystem or host-format knowledge — every
+    vendor-specific concern (locating/parsing the log, token vocabulary) was
+    resolved by the front-end. The `source` block is passed through verbatim,
+    so its keys stay the codex-flavored `rollout_*` names for byte-identical
+    codex output (a claude-code source carries the same key names holding a
+    transcript path — a naming wart to revisit under a schema bump)."""
+    tool_durations = inter["tool_durations"]
+    turns = inter["turns"]
+    tokens = inter["tokens"]
+    src = inter["source"]
+
     total_tool_ms = sum(t["ms"] for t in tool_durations)
     total_turn_ms = sum(t["wall_ms"] for t in turns if isinstance(t.get("wall_ms"), (int, float)))
     orchestrator_think_ms = max(0, total_turn_ms - total_tool_ms) if turns else None
 
-    run_dir_str = str(run_dir)
+    run_dir_str = str(Path(run_dir))
     polls = [t for t in tool_durations
             if run_dir_str in t["input"] or "driver.log" in t["input"]
             or (run_id and run_id in t["input"])]
@@ -613,27 +621,21 @@ def extract_operator(run_dir, rollout_path=None):
         prev_output = t["output"]
     poll_info_ratio = round(informative / poll_count, 2) if poll_count else None
 
+    first_task_started_t = inter["first_task_started_t"]
+    last_t = inter["last_t"]
     pre_driver_ms = (_delta_ms(first_task_started_t, run_start["t"])
                      if run_start and first_task_started_t else None)
     during_driver_ms = (_delta_ms(run_start["t"], run_end["t"])
                         if run_start and run_end else None)
     post_driver_ms = (_delta_ms(run_end["t"], last_t) if run_end and last_t else None)
 
-    rollout_bytes = rp.stat().st_size
-    rollout_sha256 = hashlib.sha256(rp.read_bytes()).hexdigest()
-
-    result = {
+    return {
         "schema": SCHEMA, "run_id": run_id,
-        "rollout_path": str(rp), "rollout_sha256": rollout_sha256,
-        "rollout_bytes": rollout_bytes, "unparsed_lines": unparsed,
-        "model_requests": model_requests,
-        "tokens": {
-            "input": tokens.get("input_tokens") if tokens else None,
-            "cached_input": tokens.get("cached_input_tokens") if tokens else None,
-            "output": tokens.get("output_tokens") if tokens else None,
-            "reasoning_output": tokens.get("reasoning_output_tokens") if tokens else None,
-        } if tokens else {"input": None, "cached_input": None, "output": None,
-                          "reasoning_output": None},
+        "rollout_path": src.get("path"), "rollout_sha256": src.get("sha256"),
+        "rollout_bytes": src.get("bytes"), "unparsed_lines": src.get("unparsed_lines"),
+        "model_requests": inter["model_requests"],
+        "tokens": tokens if tokens else {"input": None, "cached_input": None,
+                                         "output": None, "reasoning_output": None},
         "turns": turns,
         "orchestrator_think_ms": orchestrator_think_ms,
         "tool_ms": total_tool_ms,
@@ -642,6 +644,47 @@ def extract_operator(run_dir, rollout_path=None):
         "pre_driver_ms": pre_driver_ms, "during_driver_ms": during_driver_ms,
         "post_driver_ms": post_driver_ms,
     }
+
+
+def extract_operator(run_dir, rollout_path=None):
+    """(operator_dict, None) | (None, error_line). Locates the Codex rollout,
+    parses it to the host-neutral intermediate, computes the operator dict.
+    Codex-specific ONLY in locating + parsing the rollout; the math is the
+    host-agnostic compute_operator(). Never guesses: a missing rollout is a
+    loud exit 3, not a fabricated number."""
+    run_dir = Path(run_dir)
+    events = read_events(run_dir / "trace" / "trace.jsonl")
+    run_start = next((e for e in events if e.get("ev") == "run-start"), None)
+    run_end = next((e for e in reversed(events) if e.get("ev") == "run-end"), None)
+    run_id = (run_start or {}).get("run_id")
+
+    if rollout_path is None:
+        home = Path(os.environ.get("HOME", str(Path.home())))
+        candidates = sorted(
+            glob.glob(str(home / ".codex" / "sessions" / "**" / "rollout-*.jsonl"),
+                      recursive=True),
+            key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+            reverse=True)[:20]
+        found = None
+        if run_id:
+            needle = run_id.encode("utf-8")
+            for c in candidates:
+                try:
+                    if needle in Path(c).read_bytes():
+                        found = c
+                        break
+                except OSError:
+                    continue
+        if found is None:
+            return None, f"operator: no rollout found for {run_id!r}"
+        rollout_path = found
+
+    rp = Path(rollout_path)
+    if not rp.exists():
+        return None, f"operator: rollout not found: {rp}"
+
+    inter = parse_codex_rollout(rp)
+    result = compute_operator(inter, run_dir, run_start, run_end, run_id)
     return result, None
 
 

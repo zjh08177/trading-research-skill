@@ -43,3 +43,9 @@ artifacts/
 reliability/
 /cmp-dark.png
 /cmp-light.png
+
+# profiler regression fixtures with real session content — local-only, public-repo-unsafe
+tests/fixtures/btsg-rollout.jsonl
+tests/fixtures/btsg-operator.golden.json
+tests/fixtures/btsg-run/trace/operator.json
+tests/fixtures/btsg-run/trace/summary.json

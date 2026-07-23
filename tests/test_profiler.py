@@ -577,6 +577,51 @@ def test_operator_missing_rollout_exits_3_and_never_guesses(tmp_path):
     assert "not found" in err
 
 
+# --- the extract_operator -> parse_codex_rollout + compute_operator split -----
+# Golden regression: a real Codex run (BTSG) pinned as a fixture. Guards that
+# refactoring the host-neutral seam never changes codex operator output.
+
+_FIX = ROOT / "tests" / "fixtures"
+_BTSG_RUN = _FIX / "btsg-run"
+_BTSG_ROLLOUT = _FIX / "btsg-rollout.jsonl"
+_BTSG_GOLDEN = _FIX / "btsg-operator.golden.json"
+
+
+@pytest.mark.skipif(not _BTSG_GOLDEN.exists(), reason="btsg golden fixture absent")
+def test_codex_operator_matches_pinned_golden():
+    """The refactored extract_operator reproduces the pre-split output on a real
+    run. The fixture rollout is a byte-copy of the original, so EVERY field but
+    the (absolute) rollout_path must match — sha256/bytes included."""
+    result, err = trace_mod.extract_operator(_BTSG_RUN, rollout_path=str(_BTSG_ROLLOUT))
+    assert err is None, err
+    gold = json.loads(_BTSG_GOLDEN.read_text())
+    for k in gold:
+        if k == "rollout_path":
+            continue  # fixture path differs from the original ~/.codex location
+        assert result[k] == gold[k], f"field {k!r}: {result[k]!r} != golden {gold[k]!r}"
+
+
+@pytest.mark.skipif(not _BTSG_ROLLOUT.exists(), reason="btsg rollout fixture absent")
+def test_parse_codex_rollout_returns_host_neutral_intermediate():
+    """The front-end yields the intermediate contract every host must return;
+    compute_operator() over it equals the full extract_operator() result."""
+    inter = trace_mod.parse_codex_rollout(_BTSG_ROLLOUT)
+    assert set(inter) == {"source", "model_requests", "tokens", "turns",
+                          "tool_durations", "first_task_started_t", "last_t"}
+    assert inter["source"]["kind"] == "codex-rollout"
+    # normalized token vocabulary (no codex `*_tokens` keys leak through)
+    assert inter["tokens"] is None or set(inter["tokens"]) == {
+        "input", "cached_input", "output", "reasoning_output"}
+
+    events = trace_mod.read_events(_BTSG_RUN / "trace" / "trace.jsonl")
+    run_start = next((e for e in events if e.get("ev") == "run-start"), None)
+    run_end = next((e for e in reversed(events) if e.get("ev") == "run-end"), None)
+    run_id = (run_start or {}).get("run_id")
+    computed = trace_mod.compute_operator(inter, _BTSG_RUN, run_start, run_end, run_id)
+    full, _ = trace_mod.extract_operator(_BTSG_RUN, rollout_path=str(_BTSG_ROLLOUT))
+    assert computed == full
+
+
 # --- criterion 8: no side effects on run_stats.py ---------------------------
 
 
