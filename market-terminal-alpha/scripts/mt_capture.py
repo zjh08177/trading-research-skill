@@ -136,6 +136,9 @@ def main(argv):
             if args.sleep_ms and i < len(todo):
                 time.sleep(args.sleep_ms / 1000)
 
+    with open(os.path.join(DATA_DIR, "capture.heartbeat"), "w") as hb:
+        hb.write(captured_at)
+
     print(json.dumps({
         "capture_date": capture_date, "index": args.index_etf,
         "captured": captured, "failed": failed, "skipped_today": len(seen),

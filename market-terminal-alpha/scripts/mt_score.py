@@ -100,10 +100,16 @@ def main(argv):
     ap.add_argument("--out", default=os.path.join(DATA_DIR, "scorecard.json"))
     args = ap.parse_args(argv)
 
+    import datetime as _dt
+    hb = os.path.join(os.path.dirname(args.out), "score.heartbeat")
+    open(hb, "w").write(_dt.datetime.now(_dt.timezone.utc).isoformat())
+
     rows = _read_jsonl(args.resolved)
     if not rows:
-        print(json.dumps({"error": "no resolved rows yet", "resolved_file": args.resolved,
-                          "note": "cohorts resolve ~15 sessions after capture"}, indent=2))
+        status = {"n_cohorts": 0, "n_resolved_total": 0, "pooled": None,
+                  "note": "no resolved cohorts yet — first matures ~15 sessions after capture"}
+        json.dump(status, open(args.out, "w"), indent=1)
+        print(json.dumps(status, indent=2))
         return 0
 
     by_cohort = defaultdict(list)
