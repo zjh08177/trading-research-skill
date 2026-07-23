@@ -577,6 +577,183 @@ def test_operator_missing_rollout_exits_3_and_never_guesses(tmp_path):
     assert "not found" in err
 
 
+# --- the extract_operator -> parse_codex_rollout + compute_operator split -----
+# Golden regression: a real Codex run (BTSG) pinned as a fixture. Guards that
+# refactoring the host-neutral seam never changes codex operator output.
+
+_FIX = ROOT / "tests" / "fixtures"
+_BTSG_RUN = _FIX / "btsg-run"
+_BTSG_ROLLOUT = _FIX / "btsg-rollout.jsonl"
+_BTSG_GOLDEN = _FIX / "btsg-operator.golden.json"
+
+
+@pytest.mark.skipif(not _BTSG_GOLDEN.exists(), reason="btsg golden fixture absent")
+def test_codex_operator_matches_pinned_golden():
+    """The refactored extract_operator reproduces the pre-split output on a real
+    run. The fixture rollout is a byte-copy of the original, so EVERY field but
+    the (absolute) rollout_path must match — sha256/bytes included."""
+    result, err = trace_mod.extract_operator(_BTSG_RUN, rollout_path=str(_BTSG_ROLLOUT))
+    assert err is None, err
+    gold = json.loads(_BTSG_GOLDEN.read_text())
+    for k in gold:
+        if k == "rollout_path":
+            continue  # fixture path differs from the original ~/.codex location
+        assert result[k] == gold[k], f"field {k!r}: {result[k]!r} != golden {gold[k]!r}"
+
+
+@pytest.mark.skipif(not _BTSG_ROLLOUT.exists(), reason="btsg rollout fixture absent")
+def test_parse_codex_rollout_returns_host_neutral_intermediate():
+    """The front-end yields the intermediate contract every host must return;
+    compute_operator() over it equals the full extract_operator() result."""
+    inter = trace_mod.parse_codex_rollout(_BTSG_ROLLOUT)
+    assert set(inter) == {"source", "model_requests", "tokens", "turns",
+                          "tool_durations", "first_task_started_t", "last_t"}
+    assert inter["source"]["kind"] == "codex-rollout"
+    # normalized token vocabulary (no codex `*_tokens` keys leak through)
+    assert inter["tokens"] is None or set(inter["tokens"]) == {
+        "input", "cached_input", "output", "reasoning_output"}
+
+    events = trace_mod.read_events(_BTSG_RUN / "trace" / "trace.jsonl")
+    run_start = next((e for e in events if e.get("ev") == "run-start"), None)
+    run_end = next((e for e in reversed(events) if e.get("ev") == "run-end"), None)
+    run_id = (run_start or {}).get("run_id")
+    computed = trace_mod.compute_operator(inter, _BTSG_RUN, run_start, run_end, run_id)
+    full, _ = trace_mod.extract_operator(_BTSG_RUN, rollout_path=str(_BTSG_ROLLOUT))
+    assert computed == full
+
+
+# --- claude-code L2: artifact-mtime stage reconstruction --------------------
+# mtimes do not survive git, so the run dir is built with os.utime() to known
+# offsets -- hermetic, no real run needed.
+
+def _mk_claude_run(tmp_path, name="AAPL-2026-07-21-1500", files=None):
+    """Build a fake claude-code run dir; `files` maps filename -> mtime offset
+    (seconds after t0). Returns (run_dir, t0)."""
+    run = tmp_path / name
+    run.mkdir()
+    t0 = 1_700_000_000.0
+    (run / "00-scope.md").write_text("scope")
+    os.utime(run / "00-scope.md", (t0, t0))
+    for fn, off in (files or {}).items():
+        p = run / fn
+        p.write_text("x")
+        os.utime(p, (t0 + off, t0 + off))
+    return run, t0
+
+
+_CURRENT_SCHEMA = {
+    "10-datapack.json": 100, "15-position.json": 200,
+    "20-analyst-receipts.json": 500, "30-debate.md": 900,
+    "40-risk-receipt.json": 1000,
+    "55-decision.json": 1050,          # judges finish BEFORE meanrev (out of number order)
+    "53-meanrev-block.md": 1100,
+    "60-writer-receipt.json": 2000,
+    "70-qa-prose-attempt1.txt": 2500,  # a qa attempt...
+    "70-qa-final.txt": 3000,           # ...glob must take the LATEST (qa-final)
+    "60-report.md": 2900,              # written during qa -- must NOT become a stage
+}
+
+
+def test_claude_code_reconstruction_orders_by_mtime_and_ignores_report_md(tmp_path):
+    run, _ = _mk_claude_run(tmp_path, files=_CURRENT_SCHEMA)
+    summ = trace_mod.load_summary(run, host="auto")  # no trace.jsonl -> claude-code
+    assert summ["_host"] == "claude-code"
+    assert summ["_reconstruct"]["matched"] == 9 and summ["_reconstruct"]["total"] == 9
+    assert summ["driver_wall_ms"] == 3_000_000  # t0 -> qa-final (3000s)
+
+    walls = {s["name"]: s["wall_ms"] for s in summ["stages"]}
+    assert "report" not in walls                # 60-report.md ignored
+    assert walls["qa"] == 1_000_000             # 2000->3000, glob took qa-final not attempt1
+    assert walls["writer"] == 900_000           # 1100->2000
+    assert walls["judges"] == 50_000            # ordered by mtime: judges(1050) before meanrev(1100)
+    assert walls["meanrev"] == 50_000
+
+    # stage ORDER reflects completion time: judges precedes meanrev though 55>53
+    order = [s["stage"] for s in sorted(summ["stages"], key=lambda s: -(s["wall_ms"] or 0))]
+    assert "5" in order and "4.5" in order
+
+
+def test_claude_code_reconstruction_flags_missing_stage(tmp_path):
+    files = dict(_CURRENT_SCHEMA)
+    del files["60-writer-receipt.json"]         # pre-receipt shape: no writer terminal
+    run, _ = _mk_claude_run(tmp_path, files=files)
+    summ = trace_mod.load_summary(run, host="auto")
+    assert summ["_reconstruct"]["matched"] == 8
+    assert "writer" in summ["_reconstruct"]["missing"]
+
+
+def test_claude_code_reconstruction_declines_when_too_sparse(tmp_path):
+    run, _ = _mk_claude_run(tmp_path, files={"10-datapack.json": 100})  # 1 stage only
+    events, coverage = trace_mod.reconstruct_stages_from_artifacts(run)
+    assert events is None                        # below _MIN_RECONSTRUCT_STAGES
+    assert coverage["matched"] == 1
+    # load_summary falls back to the empty-trace path, not a fabricated wall
+    summ = trace_mod.load_summary(run, host="claude-code")
+    assert summ.get("_host") is None and not summ.get("stages")
+
+
+# --- claude-code L3: transcript operator (P3) -------------------------------
+
+def _write_transcript(tmp_path):
+    lines = [
+        # BEFORE the window -> must be excluded
+        {"type": "assistant", "timestamp": "2026-07-23T09:00:00.000Z",
+         "message": {"usage": {"input_tokens": 999, "output_tokens": 999,
+                               "cache_read_input_tokens": 0},
+                     "content": [{"type": "text", "text": "prior dev work"}]}},
+        # IN window: a request + a tool call that takes 2s
+        {"type": "assistant", "timestamp": "2026-07-23T10:00:00.000Z",
+         "message": {"usage": {"input_tokens": 10, "output_tokens": 20,
+                               "cache_read_input_tokens": 5},
+                     "content": [{"type": "tool_use", "id": "call1", "name": "Bash",
+                                  "input": {"command": "echo hi"}}]}},
+        {"type": "user", "timestamp": "2026-07-23T10:00:02.000Z",
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "call1",
+                                  "content": "hi"}]}},
+        # IN window: a request + a tool call that READS a run artifact (a "poll")
+        {"type": "assistant", "timestamp": "2026-07-23T10:01:00.000Z",
+         "message": {"usage": {"input_tokens": 7, "output_tokens": 3,
+                               "cache_read_input_tokens": 100},
+                     "content": [{"type": "tool_use", "id": "call2", "name": "Read",
+                                  "input": {"file_path": "/x/AAPL-run/10-datapack.json"}}]}},
+        {"type": "user", "timestamp": "2026-07-23T10:01:01.000Z",
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "call2",
+                                  "content": "{...}"}]}},
+    ]
+    p = tmp_path / "session.jsonl"
+    p.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    return p
+
+
+def test_parse_claude_transcript_windows_and_sums(tmp_path):
+    tr = _write_transcript(tmp_path)
+    window = (trace_mod._parse_ts("2026-07-23T09:30:00Z"),
+              trace_mod._parse_ts("2026-07-23T10:30:00Z"))
+    inter = trace_mod.parse_claude_transcript(tr, window=window)
+    assert inter["source"]["kind"] == "claude-transcript"
+    assert inter["model_requests"] == 2                 # 09:00 request excluded
+    assert inter["tokens"] == {"input": 17, "cached_input": 105,
+                               "output": 23, "reasoning_output": None}
+    durs = {d["call_id"]: d["ms"] for d in inter["tool_durations"]}
+    assert durs["call1"] == 2000 and durs["call2"] == 1000
+    assert inter["turns"] == []                          # claude turn-wall not exposed
+
+    # no window -> the pre-window request IS counted (3 total)
+    assert trace_mod.parse_claude_transcript(tr)["model_requests"] == 3
+
+
+def test_claude_operator_computes_poll_ratio_over_run_refs(tmp_path):
+    tr = _write_transcript(tmp_path)
+    window = (trace_mod._parse_ts("2026-07-23T09:30:00Z"),
+              trace_mod._parse_ts("2026-07-23T10:30:00Z"))
+    inter = trace_mod.parse_claude_transcript(tr, window=window)
+    op = trace_mod.compute_operator(inter, "/x/AAPL-run", None, None, "AAPL-run")
+    assert op["model_requests"] == 2
+    assert op["poll_count"] == 1                         # only call2 references the run dir
+    assert op["tool_ms"] == 3000
+    assert op["during_driver_ms"] is None                # no driver window on claude-code
+
+
 # --- criterion 8: no side effects on run_stats.py ---------------------------
 
 

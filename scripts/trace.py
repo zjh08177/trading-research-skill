@@ -353,13 +353,111 @@ def summarize(events, operator=None):
     }
 
 
-def load_summary(run_dir):
+# --- claude-code L2: reconstruct stage wall from artifact mtimes -------------
+# The claude-code host runs stages as native orchestrator turns, so there is no
+# driver process writing trace/trace.jsonl. But each stage writes a terminal
+# artifact, and its mtime marks the stage's completion -- the run dir IS the
+# execution timeline. We synthesize trace-schema stage-start/stage-end events
+# from these mtimes and feed the SAME pure summarize() the driver host uses, so
+# claude-code gets an L2 summary with zero new summary logic. What it cannot
+# recover (model_ms/wrapper_ms/stalls) is honestly absent, not faked.
+#
+# Each stage names the ONE artifact that reliably marks its completion (a
+# receipt/decision, never a late-rendered companion .md), and stages are
+# ordered by that artifact's MTIME -- not by number -- so genuinely
+# out-of-number-order completions (e.g. mean-reversion finishing after the
+# judge decision) are reported honestly instead of producing negative gaps.
+# Each stage lists candidate terminal-artifact patterns in PREFERENCE order:
+# the first pattern that matches any file wins, and that stage's completion is
+# the LATEST mtime among that pattern's matches (so a glob tolerates retry/
+# attempt files, e.g. `70-*` spanning several qa attempts). Receipt/decision
+# artifacts (current schema) come first; the older `.md` forms are fallbacks so
+# pre-receipt runs still reconstruct. Deliberately NO report/publish stage:
+# `60-report.md` is rewritten DURING the qa loop (a bad terminal), and the html/
+# ledger tail is post-pipeline bookkeeping OUTSIDE the footer's measured wall --
+# excluding it keeps the reconstructed total aligned with the footer.
+CLAUDE_STAGE_ARTIFACTS = [
+    ("1", "datapack", ["10-datapack.json"]),
+    ("1b", "position", ["15-position.json"]),
+    ("2", "analysts", ["20-analyst-receipts.json", "20-analyst-*.md"]),
+    ("3", "debate", ["30-debate.md"]),
+    ("4", "risk", ["40-risk-receipt.json", "40-risk.md"]),
+    ("4.5", "meanrev", ["53-meanrev-block.md"]),
+    ("5", "judges", ["55-decision.json", "55-rating-block.md"]),
+    ("6", "writer", ["60-writer-receipt.json"]),
+    ("7", "qa", ["70-qa-final.txt", "70-*.txt"]),
+]
+
+# Minimum present stages below which mtime reconstruction is too sparse to trust.
+_MIN_RECONSTRUCT_STAGES = 3
+# Below this fraction of the stage map, the reconstruction is flagged low-coverage
+# (fail-loud: the number is real but incomplete, never silently undercounted).
+_LOW_COVERAGE_FRACTION = 0.6
+
+
+def reconstruct_stages_from_artifacts(run_dir):
+    """Run dir -> (synthesized trace events, coverage dict) for a claude-code run
+    with no trace.jsonl, or (None, coverage) when too few stage artifacts are
+    present to trust (`_MIN_RECONSTRUCT_STAGES`) -- a sparse partial run must not
+    masquerade as a profiled one. `coverage` = {matched, total, missing} so the
+    caller can fail loud on an incomplete map match."""
+    run_dir = Path(run_dir)
+
+    def terminal_mtime(patterns):
+        for pat in patterns:
+            hits = [p for p in glob.glob(str(run_dir / pat)) if os.path.isfile(p)]
+            if hits:
+                return max(os.path.getmtime(p) for p in hits)
+        return None
+
+    present, missing = [], []
+    for code, name, patterns in CLAUDE_STAGE_ARTIFACTS:
+        mt = terminal_mtime(patterns)
+        if mt is not None:
+            present.append({"stage": code, "name": name, "mt": mt})
+        else:
+            missing.append(name)
+    coverage = {"matched": len(present), "total": len(CLAUDE_STAGE_ARTIFACTS),
+                "missing": missing}
+    if len(present) < _MIN_RECONSTRUCT_STAGES:
+        return None, coverage
+
+    present.sort(key=lambda s: s["mt"])
+    # t0: 00-scope.md if present (the run's true start), else the earliest
+    # terminal artifact -- never later than the first stage's mtime.
+    scope_p = run_dir / "00-scope.md"
+    scope_mt = os.path.getmtime(scope_p) if scope_p.exists() else None
+    t0 = min([m for m in (scope_mt, present[0]["mt"]) if m is not None])
+
+    name = run_dir.name  # e.g. UNH-2026-07-21-2147
+    ticker = name.split("-")[0] if name else None
+
+    events = [{"ev": "run-start", "schema": SCHEMA, "run_id": name,
+               "ticker": ticker, "mode": "claude-code",
+               "driver_version": "artifact-mtime"}]
+    prev = t0
+    for s in present:
+        wall_ms = int(round((s["mt"] - prev) * 1000))
+        events.append({"ev": "stage-start", "stage": s["stage"], "name": s["name"]})
+        events.append({"ev": "stage-end", "stage": s["stage"], "name": s["name"],
+                       "status": "ok", "wall_ms": wall_ms})
+        prev = s["mt"]
+    events.append({"ev": "run-end", "wall_ms": int(round((prev - t0) * 1000))})
+    return events, coverage
+
+
+def load_summary(run_dir, host="auto"):
     """`trace/summary.json` if present (recomputing it is NOT this function's
     job -- a hand-edited summary.json, e.g. in a fault-injection test, must be
-    read verbatim); otherwise recompute from `trace/trace.jsonl` (criterion 9)."""
+    read verbatim); otherwise recompute from `trace/trace.jsonl` (criterion 9).
+
+    Host detection (`host="auto"`): a trace.jsonl with events means the driver
+    host (codex/cursor) wrote L1 -- use it. No L1 means the claude-code host --
+    reconstruct stage wall from artifact mtimes. `host` may be forced to
+    `"claude-code"` or `"driver"` to override the auto-detection."""
     run_dir = Path(run_dir)
     summary_path = run_dir / "trace" / "summary.json"
-    if summary_path.exists():
+    if host == "auto" and summary_path.exists():
         try:
             return json.loads(summary_path.read_text(encoding="utf-8"))
         except ValueError:
@@ -372,6 +470,13 @@ def load_summary(run_dir):
         except ValueError:
             operator = None
     events = read_events(run_dir / "trace" / "trace.jsonl")
+    if host == "claude-code" or (host == "auto" and not events):
+        reconstructed, coverage = reconstruct_stages_from_artifacts(run_dir)
+        if reconstructed is not None:
+            summary = summarize(reconstructed, operator=operator)
+            summary["_host"] = "claude-code"
+            summary["_reconstruct"] = coverage
+            return summary
     return summarize(events, operator=operator)
 
 
@@ -383,7 +488,20 @@ def print_summary(summary, out=sys.stdout):
     ticker = summary.get("ticker") or "?"
     wall_ms = summary.get("driver_wall_ms")
     wall_s = f"{wall_ms / 1000:.0f}s" if isinstance(wall_ms, (int, float)) else "?"
-    print(f"run {run_id}  {ticker}  driver_wall {wall_s}", file=out)
+    wall_label = "wall" if summary.get("_host") == "claude-code" else "driver_wall"
+    print(f"run {run_id}  {ticker}  {wall_label} {wall_s}", file=out)
+    rec = summary.get("_reconstruct")
+    if isinstance(rec, dict):
+        matched, total = rec.get("matched"), rec.get("total")
+        note = (" LOW-COVERAGE" if isinstance(matched, int) and isinstance(total, int)
+                and matched < _LOW_COVERAGE_FRACTION * total else "")
+        print(f"  host claude-code · stage wall from artifact mtimes "
+              f"({matched}/{total} stages{note}); model/wrapper/stall detail N/A", file=out)
+        if rec.get("missing"):
+            # Any missing stage means the reconstructed wall is INCOMPLETE by that
+            # stage's time -- disclose it so the total is never read as the whole run.
+            print(f"  no artifact for: {', '.join(rec['missing'])} "
+                  f"(their wall is not in the total)", file=out)
     for st in summary.get("stages", []):
         pct = st.get("pct_of_driver_wall")
         pct_s = f"{pct:.0f}%" if isinstance(pct, (int, float)) else "?%"
@@ -431,7 +549,7 @@ def print_summary(summary, out=sys.stdout):
 
 
 def cmd_summary(args):
-    summary = load_summary(args.run_dir)
+    summary = load_summary(args.run_dir, host=args.host)
     print_summary(summary)
     return 0
 
@@ -486,7 +604,15 @@ def cmd_compare(args):
 
 
 def cmd_operator(args):
-    result, err = extract_operator(args.run_dir, args.rollout)
+    host = args.host
+    if host == "auto":
+        # trace.jsonl present -> a driver host wrote L1 (codex); else claude-code.
+        host = "codex" if read_events(Path(args.run_dir) / "trace" / "trace.jsonl") \
+            else "claude-code"
+    if host == "claude-code":
+        result, err = extract_operator_claude(args.run_dir, args.transcript)
+    else:
+        result, err = extract_operator(args.run_dir, args.rollout)
     if err:
         sys.stderr.write(err + "\n")
         return 3
@@ -499,41 +625,20 @@ def cmd_operator(args):
     return 0
 
 
-def extract_operator(run_dir, rollout_path=None):
-    """(operator_dict, None) | (None, error_line). Locates, parses and caches
-    orchestrator cost from a Codex rollout log against a run's trace. Never
-    guesses: a missing rollout is a loud exit 3, not a fabricated number."""
-    run_dir = Path(run_dir)
-    events = read_events(run_dir / "trace" / "trace.jsonl")
-    run_start = next((e for e in events if e.get("ev") == "run-start"), None)
-    run_end = next((e for e in reversed(events) if e.get("ev") == "run-end"), None)
-    run_id = (run_start or {}).get("run_id")
+def parse_codex_rollout(rollout_path):
+    """Codex rollout jsonl -> the host-neutral operator INTERMEDIATE that every
+    host front-end returns (codex here; claude-code/cursor are siblings). This
+    is the ONLY codex-rollout-format-coupled parser; all the arithmetic lives
+    in host-agnostic compute_operator(). Token vocabulary is normalized HERE
+    (codex `input_tokens`/... -> the 4 canonical fields) so compute_operator
+    never sees a vendor's token key names.
 
-    if rollout_path is None:
-        home = Path(os.environ.get("HOME", str(Path.home())))
-        candidates = sorted(
-            glob.glob(str(home / ".codex" / "sessions" / "**" / "rollout-*.jsonl"),
-                      recursive=True),
-            key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
-            reverse=True)[:20]
-        found = None
-        if run_id:
-            needle = run_id.encode("utf-8")
-            for c in candidates:
-                try:
-                    if needle in Path(c).read_bytes():
-                        found = c
-                        break
-                except OSError:
-                    continue
-        if found is None:
-            return None, f"operator: no rollout found for {run_id!r}"
-        rollout_path = found
-
+    Intermediate schema:
+      {source: {kind, path, sha256, bytes, unparsed_lines},
+       model_requests: int, tokens: {input,cached_input,output,reasoning_output}|None,
+       turns: [{turn_id, wall_ms}], tool_durations: [{call_id, ms, input, output}],
+       first_task_started_t: iso|None, last_t: iso|None}"""
     rp = Path(rollout_path)
-    if not rp.exists():
-        return None, f"operator: rollout not found: {rp}"
-
     model_requests = 0
     tokens = None
     unparsed = 0
@@ -595,11 +700,40 @@ def extract_operator(run_dir, rollout_path=None):
                             "input": call.get("input") or "", "output": out_text or "",
                         })
 
+    norm_tokens = {
+        "input": tokens.get("input_tokens"),
+        "cached_input": tokens.get("cached_input_tokens"),
+        "output": tokens.get("output_tokens"),
+        "reasoning_output": tokens.get("reasoning_output_tokens"),
+    } if tokens else None
+    return {
+        "source": {"kind": "codex-rollout", "path": str(rp),
+                   "sha256": hashlib.sha256(rp.read_bytes()).hexdigest(),
+                   "bytes": rp.stat().st_size, "unparsed_lines": unparsed},
+        "model_requests": model_requests, "tokens": norm_tokens,
+        "turns": turns, "tool_durations": tool_durations,
+        "first_task_started_t": first_task_started_t, "last_t": last_t,
+    }
+
+
+def compute_operator(inter, run_dir, run_start, run_end, run_id):
+    """Host-AGNOSTIC: an operator intermediate (from ANY host front-end) ->
+    the operator.json dict. No filesystem or host-format knowledge — every
+    vendor-specific concern (locating/parsing the log, token vocabulary) was
+    resolved by the front-end. The `source` block is passed through verbatim,
+    so its keys stay the codex-flavored `rollout_*` names for byte-identical
+    codex output (a claude-code source carries the same key names holding a
+    transcript path — a naming wart to revisit under a schema bump)."""
+    tool_durations = inter["tool_durations"]
+    turns = inter["turns"]
+    tokens = inter["tokens"]
+    src = inter["source"]
+
     total_tool_ms = sum(t["ms"] for t in tool_durations)
     total_turn_ms = sum(t["wall_ms"] for t in turns if isinstance(t.get("wall_ms"), (int, float)))
     orchestrator_think_ms = max(0, total_turn_ms - total_tool_ms) if turns else None
 
-    run_dir_str = str(run_dir)
+    run_dir_str = str(Path(run_dir))
     polls = [t for t in tool_durations
             if run_dir_str in t["input"] or "driver.log" in t["input"]
             or (run_id and run_id in t["input"])]
@@ -613,27 +747,21 @@ def extract_operator(run_dir, rollout_path=None):
         prev_output = t["output"]
     poll_info_ratio = round(informative / poll_count, 2) if poll_count else None
 
+    first_task_started_t = inter["first_task_started_t"]
+    last_t = inter["last_t"]
     pre_driver_ms = (_delta_ms(first_task_started_t, run_start["t"])
                      if run_start and first_task_started_t else None)
     during_driver_ms = (_delta_ms(run_start["t"], run_end["t"])
                         if run_start and run_end else None)
     post_driver_ms = (_delta_ms(run_end["t"], last_t) if run_end and last_t else None)
 
-    rollout_bytes = rp.stat().st_size
-    rollout_sha256 = hashlib.sha256(rp.read_bytes()).hexdigest()
-
-    result = {
+    return {
         "schema": SCHEMA, "run_id": run_id,
-        "rollout_path": str(rp), "rollout_sha256": rollout_sha256,
-        "rollout_bytes": rollout_bytes, "unparsed_lines": unparsed,
-        "model_requests": model_requests,
-        "tokens": {
-            "input": tokens.get("input_tokens") if tokens else None,
-            "cached_input": tokens.get("cached_input_tokens") if tokens else None,
-            "output": tokens.get("output_tokens") if tokens else None,
-            "reasoning_output": tokens.get("reasoning_output_tokens") if tokens else None,
-        } if tokens else {"input": None, "cached_input": None, "output": None,
-                          "reasoning_output": None},
+        "rollout_path": src.get("path"), "rollout_sha256": src.get("sha256"),
+        "rollout_bytes": src.get("bytes"), "unparsed_lines": src.get("unparsed_lines"),
+        "model_requests": inter["model_requests"],
+        "tokens": tokens if tokens else {"input": None, "cached_input": None,
+                                         "output": None, "reasoning_output": None},
         "turns": turns,
         "orchestrator_think_ms": orchestrator_think_ms,
         "tool_ms": total_tool_ms,
@@ -642,6 +770,231 @@ def extract_operator(run_dir, rollout_path=None):
         "pre_driver_ms": pre_driver_ms, "during_driver_ms": during_driver_ms,
         "post_driver_ms": post_driver_ms,
     }
+
+
+def extract_operator(run_dir, rollout_path=None):
+    """(operator_dict, None) | (None, error_line). Locates the Codex rollout,
+    parses it to the host-neutral intermediate, computes the operator dict.
+    Codex-specific ONLY in locating + parsing the rollout; the math is the
+    host-agnostic compute_operator(). Never guesses: a missing rollout is a
+    loud exit 3, not a fabricated number."""
+    run_dir = Path(run_dir)
+    events = read_events(run_dir / "trace" / "trace.jsonl")
+    run_start = next((e for e in events if e.get("ev") == "run-start"), None)
+    run_end = next((e for e in reversed(events) if e.get("ev") == "run-end"), None)
+    run_id = (run_start or {}).get("run_id")
+
+    if rollout_path is None:
+        home = Path(os.environ.get("HOME", str(Path.home())))
+        candidates = sorted(
+            glob.glob(str(home / ".codex" / "sessions" / "**" / "rollout-*.jsonl"),
+                      recursive=True),
+            key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0,
+            reverse=True)[:20]
+        found = None
+        if run_id:
+            needle = run_id.encode("utf-8")
+            for c in candidates:
+                try:
+                    if needle in Path(c).read_bytes():
+                        found = c
+                        break
+                except OSError:
+                    continue
+        if found is None:
+            return None, f"operator: no rollout found for {run_id!r}"
+        rollout_path = found
+
+    rp = Path(rollout_path)
+    if not rp.exists():
+        return None, f"operator: rollout not found: {rp}"
+
+    inter = parse_codex_rollout(rp)
+    result = compute_operator(inter, run_dir, run_start, run_end, run_id)
+    return result, None
+
+
+def parse_claude_transcript(transcript_path, window=None):
+    """Claude-code session transcript (~/.claude/projects/<slug>/<id>.jsonl) ->
+    the SAME host-neutral operator intermediate parse_codex_rollout() returns.
+    `window` = (start_dt, end_dt) UTC datetimes: only assistant requests / tool
+    calls whose timestamp is in [start, end] count, so a long session that ran
+    the pipeline among other work contributes ONLY its in-window cost.
+
+    On claude-code the orchestrator's model turns ARE the assistant messages
+    (each carries a `usage` block = one API request); pipeline workers run as
+    tool calls (background Bash / Agent), captured via tool_use<->tool_result by
+    `tool_use_id`. Per-turn wall is not exposed the way a codex rollout exposes
+    task_started/task_complete, so `turns` stays empty (orchestrator_think_ms ->
+    None); the load-bearing claude signals are requests, tokens, tool durations
+    and poll detection."""
+    rp = Path(transcript_path)
+    lo, hi = window if window else (None, None)
+
+    def in_window(dt):
+        if dt is None:
+            return window is None
+        if lo and dt < lo:
+            return False
+        if hi and dt > hi:
+            return False
+        return True
+
+    model_requests = 0
+    tok = {"input": 0, "cached_input": 0, "output": 0}
+    any_tokens = False
+    tool_calls = {}
+    tool_durations = []
+    first_t = last_t = None
+    unparsed = 0
+
+    with rp.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                unparsed += 1
+                continue
+            iso = d.get("timestamp")
+            dt = _parse_ts(iso)
+            in_win = in_window(dt)
+            msg = d.get("message")
+            if not isinstance(msg, dict):
+                continue
+            usage = msg.get("usage")
+            if isinstance(usage, dict) and in_win:
+                model_requests += 1
+                any_tokens = True
+                tok["input"] += usage.get("input_tokens") or 0
+                tok["cached_input"] += usage.get("cache_read_input_tokens") or 0
+                tok["output"] += usage.get("output_tokens") or 0
+                if iso:
+                    if first_t is None:
+                        first_t = iso
+                    last_t = iso
+            content = msg.get("content")
+            if isinstance(content, list):
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "tool_use" and in_win:
+                        inp = b.get("input")
+                        inp_s = inp if isinstance(inp, str) else json.dumps(inp or {})
+                        tool_calls[b.get("id")] = {"start_iso": iso, "input": inp_s}
+                    elif b.get("type") == "tool_result":
+                        call = tool_calls.get(b.get("tool_use_id"))
+                        if call and call.get("start_iso") and iso:
+                            ms = _delta_ms(call["start_iso"], iso)
+                            out = b.get("content")
+                            out_s = out if isinstance(out, str) else json.dumps(out)
+                            tool_durations.append({
+                                "call_id": b.get("tool_use_id"), "ms": ms or 0,
+                                "input": call.get("input") or "", "output": out_s or ""})
+                            if iso:
+                                last_t = iso
+
+    norm_tokens = {"input": tok["input"], "cached_input": tok["cached_input"],
+                   "output": tok["output"], "reasoning_output": None} \
+        if any_tokens else None
+    return {
+        "source": {"kind": "claude-transcript", "path": str(rp),
+                   "sha256": hashlib.sha256(rp.read_bytes()).hexdigest(),
+                   "bytes": rp.stat().st_size, "unparsed_lines": unparsed},
+        "model_requests": model_requests, "tokens": norm_tokens,
+        "turns": [], "tool_durations": tool_durations,
+        "first_task_started_t": first_t, "last_t": last_t,
+    }
+
+
+def _run_window(run_dir):
+    """(start_dt, end_dt) UTC for a claude-code run, from artifact mtimes -- the
+    same signal P2's reconstruction uses. None if the run is too sparse."""
+    events, _ = reconstruct_stages_from_artifacts(run_dir)
+    if events is None:
+        return None
+    run_dir = Path(run_dir)
+    scope = run_dir / "00-scope.md"
+    starts = [os.path.getmtime(scope)] if scope.exists() else []
+    # end = the run-end wall added to the earliest stage mtime is fragile; use
+    # the latest terminal mtime directly.
+    mtimes = [os.path.getmtime(p) for p in glob.glob(str(run_dir / "*"))
+              if os.path.isfile(p)]
+    if not mtimes:
+        return None
+    lo = min(starts) if starts else min(mtimes)
+    # cap end at the last STAGE terminal (exclude next-day companion outliers):
+    # take the last stage-end wall from the reconstruction.
+    total_ms = next((e["wall_ms"] for e in reversed(events) if e.get("ev") == "run-end"), None)
+    hi = lo + (total_ms / 1000.0 if total_ms else (max(mtimes) - lo))
+    tz = datetime.timezone.utc
+    return (datetime.datetime.fromtimestamp(lo, tz),
+            datetime.datetime.fromtimestamp(hi, tz))
+
+
+def locate_claude_transcript(run_dir, window):
+    """Best-effort: the claude-code session jsonl that actually RAN this pipeline
+    -- the one with the most tool activity INSIDE the run window that also
+    references the run dir. NOT a run-id grep (a later dev session references a
+    run dir without having run it -- the spike's exact trap). Returns path|None;
+    a caller always has the explicit `--transcript` override."""
+    run_dir = Path(run_dir)
+    lo, hi = window
+    needle = run_dir.name
+    home = Path(os.environ.get("HOME", str(Path.home())))
+    cands = [c for c in glob.glob(str(home / ".claude" / "projects" / "**" / "*.jsonl"),
+                                  recursive=True)
+             if os.path.exists(c) and os.path.getmtime(c) >= lo.timestamp() - 5]
+    best, best_hits = None, 0
+    for c in cands:
+        hits, refs = 0, False
+        try:
+            with open(c, encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    if needle in line:
+                        refs = True
+                    # cheap in-window probe on the raw timestamp field
+                    i = line.find('"timestamp"')
+                    if i != -1:
+                        dt = _parse_ts(line[i + 12:i + 45].split('"')[1]
+                                       if '"' in line[i + 12:i + 45] else None)
+                        if dt and lo <= dt <= hi:
+                            hits += 1
+        except OSError:
+            continue
+        if refs and hits > best_hits:
+            best, best_hits = c, hits
+    return best
+
+
+def extract_operator_claude(run_dir, transcript_path=None):
+    """(operator_dict, None) | (None, error). The claude-code sibling of
+    extract_operator: window the run from artifact mtimes, locate (or take) the
+    session transcript, parse it, compute. Fail-loud: no transcript with
+    in-window activity is a loud error, never a fabricated number."""
+    run_dir = Path(run_dir)
+    window = _run_window(run_dir)
+    if window is None:
+        return None, f"operator: {run_dir.name!r} has too few artifacts to window"
+    if transcript_path is None:
+        transcript_path = locate_claude_transcript(run_dir, window)
+        if transcript_path is None:
+            return None, (f"operator: no claude-code transcript with in-window "
+                          f"activity found for {run_dir.name!r} — pass --transcript")
+    rp = Path(transcript_path)
+    if not rp.exists():
+        return None, f"operator: transcript not found: {rp}"
+    inter = parse_claude_transcript(rp, window=window)
+    if inter["model_requests"] == 0:
+        return None, (f"operator: transcript {rp.name} has zero in-window model "
+                      f"requests for {run_dir.name!r} — wrong transcript or window")
+    run_id = run_dir.name
+    # pre/during/post is a codex-driver concept (orchestrator around a driver
+    # process); on claude-code the orchestrator IS the pipeline, so pass no
+    # driver window -> those fields are honestly None.
+    result = compute_operator(inter, run_dir, None, None, run_id)
     return result, None
 
 
@@ -653,6 +1006,9 @@ def build_arg_parser():
 
     s = sub.add_parser("summary", help="where did this run's time go")
     s.add_argument("run_dir")
+    s.add_argument("--host", default="auto", choices=["auto", "claude-code", "driver"],
+                   help="auto: trace.jsonl present -> driver; absent -> claude-code "
+                        "(reconstruct stage wall from artifact mtimes)")
     s.set_defaults(func=cmd_summary)
 
     c = sub.add_parser("compare", help="did my change help")
@@ -662,7 +1018,12 @@ def build_arg_parser():
 
     o = sub.add_parser("operator", help="orchestrator cost around the driver")
     o.add_argument("run_dir")
-    o.add_argument("--rollout", default=None)
+    o.add_argument("--host", default="auto", choices=["auto", "codex", "claude-code"],
+                   help="auto: trace.jsonl present -> codex (rollout); absent -> "
+                        "claude-code (session transcript)")
+    o.add_argument("--rollout", default=None, help="codex host: explicit rollout jsonl")
+    o.add_argument("--transcript", default=None,
+                   help="claude-code host: explicit session transcript jsonl")
     o.set_defaults(func=cmd_operator)
     return p
 

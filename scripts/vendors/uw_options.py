@@ -236,6 +236,13 @@ def build(ticker, spot, atr, earnings, fetch):
         fac = fct(rows, "list", "live")
         fac["session_state"] = session
         F["P8.flow_alerts"] = fac
+        # Smart-money scored flow: rank prints against an institutional ruleset
+        # (premium tier, DTE window, vol/OI, ask-side, sweep, opening). Context
+        # list — never numerically tagged in the report (O3). Snapshot, not live:
+        # it scores the alert tape as-of the fetch, independent of session state.
+        smart = _score_flow(fa, spot, run_asof)
+        if smart:
+            F["P8.smart_flow"] = fct(smart, "list", "snapshot")
 
     _data_floor(F, fetch, gex_net, atr, spot, rv_now, flip, earnings)
     return F, fetch.gaps
@@ -298,6 +305,83 @@ def _data_floor(F, fetch, gex_net, atr, spot, rv_now, flip, earnings):
         regime = "short-gamma"
     F["P8.gex_regime"] = fct(regime, "label", "snapshot", True)
     F["P8.gex_data_inconsistent"] = fct(inconsistent, "bool", "snapshot", True)
+
+
+def _dte(expiry, created_at, run_asof):
+    """Calendar days from the alert time (or run date) to expiry; None if unparsable."""
+    try:
+        exp = datetime.strptime(str(expiry)[:10], "%Y-%m-%d").date()
+        base_s = str(created_at)[:10] if created_at else run_asof
+        base = datetime.strptime(base_s, "%Y-%m-%d").date()
+        return (exp - base).days
+    except (TypeError, ValueError):
+        return None
+
+
+def _score_flow(alerts, spot, run_asof, top=12):
+    """Score each flow-alert against the institutional ruleset and return the
+    top-N as context rows [score, type, strike, expiry, premium, dte, tags].
+
+    Rules (additive 0-100, higher = more smart-money-like):
+      premium tier  >=1M +35 / >=500k +25 / >=300k +12  (below 300k dropped)
+      DTE           60-120 +20 / 30-180 +12 / <=7 -15
+      vol/OI        >=2x +18 (new positioning) / <0.5x -8 (likely closing)
+      ask-side      >=60% +15 (aggressive buyers) / <=20% call -10 (sellers)
+      sweep +12 · multileg +4 · all-opening +8 · repeated +6
+    Deterministic; no network. Context-only (O3/O9): describes positioning,
+    never names a strike/expiry to trade."""
+    scored = []
+    for a in alerts:
+        prem = f(a.get("total_premium"))
+        if prem < 300_000:
+            continue  # hard floor — ignore tiny trades
+        typ = (a.get("type") or "").lower()
+        strike = f(a.get("strike"))
+        expiry = a.get("expiry")
+        dte = _dte(expiry, a.get("created_at"), run_asof)
+        vol, oi = f(a.get("volume")), f(a.get("open_interest"))
+        voi = f(a.get("volume_oi_ratio")) or (vol / oi if oi else 0.0)
+        ask_p, bid_p = f(a.get("total_ask_side_prem")), f(a.get("total_bid_side_prem"))
+        tot = ask_p + bid_p
+        ask_frac = ask_p / tot if tot else 0.0
+        sweep = bool(a.get("has_sweep"))
+        multileg = bool(a.get("has_multileg"))
+        opening = bool(a.get("all_opening_trades"))
+        repeated = "RepeatedHits" in (a.get("alert_rule") or "")
+
+        score, tags = 0, []
+        if prem >= 1_000_000:
+            score += 35; tags.append("very-large-prem")
+        elif prem >= 500_000:
+            score += 25; tags.append("preferred-prem")
+        else:
+            score += 12; tags.append("min-prem")
+        if dte is not None:
+            if 60 <= dte <= 120:
+                score += 20; tags.append("dte-best")
+            elif 30 <= dte <= 180:
+                score += 12; tags.append("dte-sweet")
+            elif dte <= 7:
+                score -= 15; tags.append("dte-short")
+        if voi >= 2:
+            score += 18; tags.append("new-positioning")
+        elif 0 < voi < 0.5:
+            score -= 8; tags.append("maybe-closing")
+        if ask_frac >= 0.6:
+            score += 15; tags.append("ask-side")
+        elif ask_frac <= 0.2 and typ == "call":
+            score -= 10; tags.append("call-sellers")
+        if sweep:
+            score += 12; tags.append("sweep")
+        if multileg:
+            score += 4; tags.append("multileg")
+        if opening:
+            score += 8; tags.append("opening")
+        if repeated:
+            score += 6; tags.append("repeated")
+        scored.append([score, typ, strike, expiry, round(prem, 2), dte, ";".join(tags)])
+    scored.sort(key=lambda r: r[0], reverse=True)
+    return scored[:top]
 
 
 def main(argv=None):

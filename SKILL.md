@@ -218,7 +218,7 @@ in `10-datapack.md`. Flag any section past its staleness threshold as `STALE`.
 | P5 | ≤10 dated headlines + next earnings date | `vendors/marketaux_news.py` + WebSearch (earnings date); fallback stock-market-pro news | headline >14d dropped; event job >48h flagged |
 | P6 | sentiment (equity: news tone; crypto: LunarCrush) | LunarCrush MCP / derived | >1 day |
 | P7 | track record | `ledger.py read --ticker X --before <as_of>` | guard is code, not prose |
-| P8 | dealer GEX + gamma regime/flip, IV rank/skew/term, max pain, OI walls, live flow (`--options` only) | `vendors/uw_options.py` (Unusual Whales); suppresses P4 on success | per-fact daily/snapshot; live facts session-gated |
+| P8 | dealer GEX + gamma regime/flip, IV rank/skew/term, max pain, OI walls, live flow + scored smart-money flow (`--options` only) | `vendors/uw_options.py` (Unusual Whales); suppresses P4 on success | per-fact daily/snapshot; live facts session-gated |
 | P9 | left-side/right-side stretch (ATR+sigma multiples), RSI percentile (all + comparable-move-conditioned), volume climax, regime cluster status, forward-return base rate (raw/regime/macro sample sizes), exhaustion-turning-condition booleans + k/4 tally | `stretch.py` + `percentile.py` + `volume_climax.py` + `move_cluster.py` + `move_base_rate.py` + `exhaustion.py` (full history via `tiingo_history.py`) | stale if `10-datapack.json` P1/P2 sections are stale |
 
 Vendor CLIs: run `<SKILL_DIR>/.venv/bin/python scripts/vendors/<cli>.py --ticker X --asof <date>`
@@ -359,6 +359,10 @@ options source, so a plain run emits `P4 MISSING` — options data requires
    `render_options` echoes it in the block. P8 is the SOLE options source: a P8
    failure or a gapped P8 IV group is accepted as a named `P4`/`P8` gap — there is
    no Schwab IV backfill after the sunset.
+   The flow-alerts fetch also emits `P8.smart_flow`: the top prints scored
+   against an institutional ruleset (premium tier, DTE window, vol/OI,
+   ask-side, sweep, opening, repeated) as a context list — describes
+   positioning, never a strike/expiry to trade (O9/O10).
 2. **Stages 2–5**: agents receive P8 verbatim and may cite positioning; the
    emitted rating stays the equity Buy/Sell/Hold — options never change it.
 3. **Stage 6a**: the orchestrator runs `render_options.py 10-datapack.json >
@@ -395,16 +399,25 @@ Options invariants (enforce alongside 1–17):
 | O6 | RR skew = call_IV − put_IV (negative under put skew); the fact labels direction, not just magnitude. |
 | O7 | Below a per-group data floor (min OI, ≥2 expiries, IV-rank present) the group emits `DATA-THIN(group)` — never a computed regime/rank on a degenerate payload. |
 | O8 | Every `live` fact carries a session-state; cumulative intraday metrics gate to STALE/DATA-THIN when the session is incomplete or absent. |
-| O9 | Output describes positioning and levels; it NEVER names a strike or expiry to buy or sell. |
+| O9 | Output describes positioning and levels; it NEVER **recommends** a strike or expiry to buy or sell. Observed flow may be shown descriptively (e.g. `P8.flow_alerts`/`P8.smart_flow` list a reported strike/expiry), but the report never prescribes a contract to trade. |
+| O10 | `P8.smart_flow` is a deterministic score over the flow-alerts tape (premium/DTE/vol-OI/ask-side/sweep/opening/repeated); it drops prints below the $300k premium floor, is a context list (never number-tagged, O3), stamps `snapshot`, and never changes the rating (it informs positioning only, like all P8). |
 
 ## Ensemble tally
 
 Spawn N=3 judges, write each vote to `50-votes/vote-<i>.md` ending in exactly one
-`VERDICT: … | CONVICTION: … | WHY: …` line, then run `ensemble.py tally 50-votes
+`VERDICT: … | CONVICTION: … | ENTRY-PATH: … | WHY: …` line, then run `ensemble.py tally 50-votes
 --n-target 3`. Act on the JSON decision on stderr: `escalate` → spawn 2 more
 judges and re-run with `--n-target 5`; `no-call` → publish the distribution under
 a NO-CALL headline; `publish` → done. Respawn a malformed vote once, then drop and
 disclose it. Insert the emitted `55-rating-block.md` into the report verbatim.
+
+The verdict line is **4-field and `ensemble.py` enforces it**: a vote missing
+`ENTRY-PATH` is MALFORMED and silently discarded — it never degrades to a 3-field
+parse. A whole panel emitting the stale 3-field form therefore yields `n_valid: 0`
+and a NO-CALL on every ticker, with no error anywhere. The canonical judge card in
+`references/prompts.md` is the source of truth for this contract; copy it rather
+than re-typing the line. (Regression 2026-07-18: the batch pipeline carried the
+3-field form and produced 32 straight NO-CALLs from 96 well-formed votes.)
 
 ## Failure map
 

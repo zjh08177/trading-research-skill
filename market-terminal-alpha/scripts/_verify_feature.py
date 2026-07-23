@@ -7,8 +7,10 @@ VAULT = os.path.expanduser(
 
 # 1) repo code parses
 for s in ("test_screener.py", "sp500_constituents.py", "resolve_universe.py",
-          "mt_capture.py", "mt_resolve.py", "mt_score.py"):
+          "mt_capture.py", "mt_resolve.py", "mt_score.py", "mt_report.py"):
     ast.parse(open(f"{REPO}/scripts/{s}").read())
+# skill wrapper present
+assert os.path.getsize(os.path.expanduser("~/.claude/skills/trading-mt-alpha/SKILL.md")) > 0, "skill missing"
 # 2) captured universe artifact well-formed with tested count
 u = json.load(open(f"{REPO}/data/api-test-universe-10B.json"))
 assert u["n"] == len(u["rows"]) == 2187, f"universe rows {u['n']}"
