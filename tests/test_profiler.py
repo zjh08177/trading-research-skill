@@ -692,6 +692,68 @@ def test_claude_code_reconstruction_declines_when_too_sparse(tmp_path):
     assert summ.get("_host") is None and not summ.get("stages")
 
 
+# --- claude-code L3: transcript operator (P3) -------------------------------
+
+def _write_transcript(tmp_path):
+    lines = [
+        # BEFORE the window -> must be excluded
+        {"type": "assistant", "timestamp": "2026-07-23T09:00:00.000Z",
+         "message": {"usage": {"input_tokens": 999, "output_tokens": 999,
+                               "cache_read_input_tokens": 0},
+                     "content": [{"type": "text", "text": "prior dev work"}]}},
+        # IN window: a request + a tool call that takes 2s
+        {"type": "assistant", "timestamp": "2026-07-23T10:00:00.000Z",
+         "message": {"usage": {"input_tokens": 10, "output_tokens": 20,
+                               "cache_read_input_tokens": 5},
+                     "content": [{"type": "tool_use", "id": "call1", "name": "Bash",
+                                  "input": {"command": "echo hi"}}]}},
+        {"type": "user", "timestamp": "2026-07-23T10:00:02.000Z",
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "call1",
+                                  "content": "hi"}]}},
+        # IN window: a request + a tool call that READS a run artifact (a "poll")
+        {"type": "assistant", "timestamp": "2026-07-23T10:01:00.000Z",
+         "message": {"usage": {"input_tokens": 7, "output_tokens": 3,
+                               "cache_read_input_tokens": 100},
+                     "content": [{"type": "tool_use", "id": "call2", "name": "Read",
+                                  "input": {"file_path": "/x/AAPL-run/10-datapack.json"}}]}},
+        {"type": "user", "timestamp": "2026-07-23T10:01:01.000Z",
+         "message": {"content": [{"type": "tool_result", "tool_use_id": "call2",
+                                  "content": "{...}"}]}},
+    ]
+    p = tmp_path / "session.jsonl"
+    p.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    return p
+
+
+def test_parse_claude_transcript_windows_and_sums(tmp_path):
+    tr = _write_transcript(tmp_path)
+    window = (trace_mod._parse_ts("2026-07-23T09:30:00Z"),
+              trace_mod._parse_ts("2026-07-23T10:30:00Z"))
+    inter = trace_mod.parse_claude_transcript(tr, window=window)
+    assert inter["source"]["kind"] == "claude-transcript"
+    assert inter["model_requests"] == 2                 # 09:00 request excluded
+    assert inter["tokens"] == {"input": 17, "cached_input": 105,
+                               "output": 23, "reasoning_output": None}
+    durs = {d["call_id"]: d["ms"] for d in inter["tool_durations"]}
+    assert durs["call1"] == 2000 and durs["call2"] == 1000
+    assert inter["turns"] == []                          # claude turn-wall not exposed
+
+    # no window -> the pre-window request IS counted (3 total)
+    assert trace_mod.parse_claude_transcript(tr)["model_requests"] == 3
+
+
+def test_claude_operator_computes_poll_ratio_over_run_refs(tmp_path):
+    tr = _write_transcript(tmp_path)
+    window = (trace_mod._parse_ts("2026-07-23T09:30:00Z"),
+              trace_mod._parse_ts("2026-07-23T10:30:00Z"))
+    inter = trace_mod.parse_claude_transcript(tr, window=window)
+    op = trace_mod.compute_operator(inter, "/x/AAPL-run", None, None, "AAPL-run")
+    assert op["model_requests"] == 2
+    assert op["poll_count"] == 1                         # only call2 references the run dir
+    assert op["tool_ms"] == 3000
+    assert op["during_driver_ms"] is None                # no driver window on claude-code
+
+
 # --- criterion 8: no side effects on run_stats.py ---------------------------
 
 
