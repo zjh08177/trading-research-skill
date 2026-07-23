@@ -241,19 +241,28 @@ def test_stall_then_resume_fires_worker_resume_and_keeps_ttfa_truthful(
     assert res.get("truncated") is False
 
 
-# --- DEFECT 4: a stall has to reach summary.json ----------------------------
+# --- DEFECT 4 / false-alarm fix: a RESOLVED stall must NOT reach summary.json
 
 
 @pytest.mark.skipif(not STALL_RESUME.exists() or not BASH_OK,
                     reason="stall-resume fixture unavailable")
-def test_a_recovered_stall_surfaces_as_an_anomaly_in_summary_json(
-        tmp_path, monkeypatch):
-    """DEFECT 4. The L1 schema defines `anomaly.kind: worker-stalled`, and L2
-    copies `anomaly` events verbatim -- but nothing emitted one, and
-    `summarize()` did not recognise the raw `worker-stall`/`worker-resume`
-    events either, so it dropped them entirely. A worker that stalled and then
-    recovered within budget left NO anomaly in the artifact you actually read,
-    defeating S1 (the spec's headline feature)."""
+def test_a_recovered_stall_produces_no_summary_anomaly_but_keeps_the_raw_pair(
+        tmp_path, monkeypatch, capsys):
+    """INVERTED from the original DEFECT 4 test. A live run (BTSG) showed a
+    recovered stall firing `anomaly{kind: worker-stalled}` on EVERY run for
+    writer/judge-class models (opus/glm) that buffer their entire output until
+    the very end -- accurate, but not actionable, and it drowns anomalies that
+    ARE actionable. A stall that resumed within budget is S1 working exactly
+    as designed (a correctly-declined kill), not an anomaly.
+
+    So a resumed stall must now:
+      - carry NOTHING into `summary.json`'s anomalies list;
+      - still leave the raw L1 `worker-stall` + `worker-resume` pair in
+        trace.jsonl -- the audit record is untouched;
+      - still fire the ONLINE `risk-stall`/`risk-resume` heartbeats on stdout,
+        because that is what the orchestrator's no-analysis poll reads to
+        avoid killing a healthy call, and it does not depend on L2 at all.
+    """
     monkeypatch.setattr(pd, "STALL_AFTER_S", 1)
     monkeypatch.setenv("MOCK_WORKER_STALL_SLEEP_S", "4")
     monkeypatch.setenv("MOCK_WORKER_STALL_ROLE", "risk")
@@ -264,16 +273,22 @@ def test_a_recovered_stall_surfaces_as_an_anomaly_in_summary_json(
                        view, 30, {"stage": "risk"})
     assert res.get("ok") is True, res
 
+    # ONLINE heartbeat: unaffected by the summary.json change.
+    out = capsys.readouterr().out
+    assert "risk-stall" in out, out
+    assert "risk-resume" in out, out
+
     events = _trace_lines(tmp_path)
+    raw_stalls = [e for e in events if e["ev"] == "worker-stall"]
+    raw_resumes = [e for e in events if e["ev"] == "worker-resume"]
+    assert raw_stalls, events
+    assert raw_resumes, events
+    assert raw_resumes[0]["role"] == "risk"
+
+    # L2: no anomaly for a resolved stall.
     summary = trace_mod.summarize(events)
     stalled = [a for a in summary["anomalies"] if a["kind"] == "worker-stalled"]
-    assert stalled, summary["anomalies"]
-    assert stalled[0]["role"] == "risk"
-    assert stalled[0]["ms"] >= 1000, stalled
-    assert "resumed" in (stalled[0]["detail"] or "")
-    # exactly one anomaly per stall episode -- L1's event and L2's synthesis
-    # must not both fire for the same episode.
-    assert len(stalled) == len([e for e in events if e["ev"] == "worker-stall"])
+    assert stalled == [], stalled
 
 
 def test_summarize_synthesizes_a_stall_that_never_resumed(tmp_path):
@@ -311,6 +326,28 @@ def test_summarize_does_not_double_count_a_stall_the_driver_already_declared():
                if a["kind"] == "worker-stalled"]
     assert len(stalled) == 1, stalled
     assert stalled[0]["detail"] == "resumed"
+
+
+def test_summarize_drops_a_driver_emitted_stall_anomaly_that_later_resumed():
+    """The real BTSG-live case: an OLDER driver emitted an
+    `anomaly{kind: worker-stalled}` ON RESUME, so its trace carries both the
+    anomaly AND a matching `worker-resume`. summarize() must be a correct reader
+    of that trace and DROP the anomaly -- a resumed stall is S1 working, not a
+    finding. Without this, every buffering-model run (opus/glm writer+judges,
+    which stream nothing until the end) shows permanent stall noise in L2."""
+    events = [
+        {"t": "2026-07-21T00:00:00.000+00:00", "ev": "worker-stall",
+         "role": "writer", "attempt": 1, "age_s": 120, "budget_left_s": 780},
+        {"t": "2026-07-21T00:01:37.000+00:00", "ev": "anomaly",
+         "kind": "worker-stalled", "role": "writer", "attempt": 1,
+         "stage": "writer", "ms": 217_000,
+         "detail": "no output for 217s, then resumed within budget"},
+        {"t": "2026-07-21T00:01:37.000+00:00", "ev": "worker-resume",
+         "role": "writer", "attempt": 1, "stalled_s": 217},
+    ]
+    stalled = [a for a in trace_mod.summarize(events)["anomalies"]
+               if a["kind"] == "worker-stalled"]
+    assert stalled == [], stalled
 
 
 # --- DEFECT 2: instrumentation I/O must never kill the run ------------------

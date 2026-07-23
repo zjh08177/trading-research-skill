@@ -147,12 +147,17 @@ def summarize(events, operator=None):
     anomalies = []
     prompt_bytes_by_role = {}
     output_bytes_by_role = {}
-    # Raw stall episodes, keyed by (role, attempt), and how many of them the
-    # driver already turned into an `anomaly{kind: worker-stalled}`. A run
-    # killed mid-stall never got to emit its anomaly -- the leftovers are
+    # Raw stall episodes, keyed by (role, attempt); raw resumes, keyed the
+    # same way; and how many stall episodes the driver already turned into an
+    # `anomaly{kind: worker-stalled}`. A stall that resumed within budget is
+    # the system working as designed and is NOT an anomaly -- only a stall the
+    # run never resumed from (killed/timed out mid-silence) is. A run killed
+    # mid-stall never got to emit that anomaly itself -- the leftover is
     # synthesized below so S1 still reaches L2 (criterion 9 + defect 4).
     stall_events = {}
+    resume_events = {}
     stall_anomalies = {}
+    held_stall_anoms = {}  # driver-emitted worker-stalled anomalies, kept only if unresolved
 
     for ev in events:
         kind = ev.get("ev")
@@ -195,20 +200,46 @@ def summarize(events, operator=None):
                 output_bytes_by_role[role] = ev.get("output_bytes") or 0
         elif kind == "worker-stall":
             stall_events.setdefault((ev.get("role"), ev.get("attempt")), []).append(ev)
+        elif kind == "worker-resume":
+            resume_events.setdefault((ev.get("role"), ev.get("attempt")), []).append(ev)
         elif kind == "anomaly":
-            anomalies.append({k: ev.get(k) for k in
-                              ("kind", "role", "stage", "ms", "detail")})
             if ev.get("kind") == "worker-stalled":
+                # HOLD it -- a worker-stalled anomaly (whether this driver
+                # version emitted one on resume, or an older trace carries one)
+                # is kept only if the episode did NOT resume. Deciding that
+                # needs the whole event stream, so resolve after the loop.
                 key = (ev.get("role"), ev.get("attempt"))
+                held_stall_anoms.setdefault(key, []).append(
+                    {k: ev.get(k) for k in ("kind", "role", "stage", "ms", "detail")})
                 stall_anomalies[key] = stall_anomalies.get(key, 0) + 1
+            else:
+                anomalies.append({k: ev.get(k) for k in
+                                  ("kind", "role", "stage", "ms", "detail")})
 
-    # Any stall episode with no matching anomaly ended with the run: the driver
-    # emits `anomaly{kind: worker-stalled}` on resume and at call end, so an
-    # uncovered `worker-stall` means the process died still silent. Report it
+    # A stall episode counts as RESOLVED -- no anomaly -- once it has a
+    # matching `worker-resume` for the same (role, attempt), or the driver
+    # already emitted its own `anomaly{kind: worker-stalled}` for it (the
+    # never-resumed/killed-mid-stall case; counted via `stall_anomalies` so
+    # that case is never double-counted here). Stalls are sequential per call,
+    # so the first N raw `worker-stall` events for a key are covered by its N
+    # resumes/already-emitted anomalies; anything past that never resumed
+    # before the process died -- the process died still silent. Report it
     # rather than dropping it -- a stall that killed the run is the single most
     # informative row this summary can carry.
+    # A driver-emitted worker-stalled anomaly survives only if its episode has
+    # no matching resume. A resumed stall is S1 working as designed (a healthy
+    # slow call was correctly NOT killed) -- pure noise in L2, and it fires on
+    # every run for buffering models (opus/glm) that stream nothing until the
+    # end. Dropping it here (not just at the driver) keeps summarize() a correct
+    # reader of ANY trace, including ones an older driver wrote.
+    for key, held in held_stall_anoms.items():
+        if not resume_events.get(key):
+            anomalies.extend(held)
+
     for (role, attempt), evs in stall_events.items():
-        for ev in evs[stall_anomalies.get((role, attempt), 0):]:
+        covered = (len(resume_events.get((role, attempt), []))
+                  + stall_anomalies.get((role, attempt), 0))
+        for ev in evs[covered:]:
             age_s = ev.get("age_s") or 0
             anomalies.append({
                 "kind": "worker-stalled", "role": role, "stage": ev.get("stage"),

@@ -834,17 +834,18 @@ class Driver:
         stall = {"in": False, "since": None}
 
         def _note_resume(last):
-            """Renewed activity closes the episode -- ONLINE (the heartbeat is
-            what the orchestrator's no-analysis poll reads) and in L2 (the
-            anomaly is what `summary.json` carries)."""
+            """Renewed activity closes the episode ONLINE only (the heartbeat
+            is what the orchestrator's no-analysis poll reads) and in the raw
+            L1 trace (the audit record). A stall that resumed within budget is
+            the system working as designed and must NOT surface as an L2
+            `summary.json` anomaly -- see `scripts/trace.py::summarize`, which
+            only synthesizes an anomaly for a `worker-stall` with no matching
+            `worker-resume`."""
             stall["in"] = False
             stalled_s = int(last - stall["since"])
             self.hb("-", f"{role}-resume", f"resumed after {stalled_s}s")
             self.trace.emit("worker-resume", role=role, attempt=attempt,
                             stalled_s=stalled_s)
-            self._emit_stall_anomaly(
-                role, meta.get("stage"), attempt, stalled_s * 1000,
-                f"no output for {stalled_s}s, then resumed within budget")
 
         deadline = spawn_mono + timeout_s
         while True:
