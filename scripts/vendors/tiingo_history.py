@@ -5,29 +5,45 @@ helper). Same TIINGO_API_KEY credential as tiingo_oracle.py, same endpoint,
 just an explicit early startDate. Stdlib only.
 
 Usage: tiingo_history.py --ticker X --asof Y [--start YYYY-MM-DD]
-Exit 0 ok; 2 bad args / missing TIINGO_API_KEY; 3 no bars on/before asof."""
+Exit 0 ok; 2 bad args / missing TIINGO_API_KEY; 3 no bars on/before asof; 4 rate-limited after retries; 1 other."""
 from _common import *  # noqa: F401,F403 - sys.path bootstrap + fact/emit/die + os/json/sys
 
 import argparse
 import datetime
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 TIINGO_DAILY = "https://api.tiingo.com/tiingo/daily"
 DEFAULT_START = "2000-01-01"
+RETRIES = 3                      # mirrors _uw_common.RETRIES_429
+RETRY_STATUS = {429, 500, 502, 503, 504}
 
 
 def fetch_history(ticker, start):
-    """Raw Tiingo daily rows (unfiltered) from `start` to latest. Raises
-    RuntimeError (no key) or urllib errors (network/HTTP) — never fabricates."""
+    """Raw Tiingo daily rows (unfiltered) from `start` to latest. Transient
+    failures (429/5xx/network) retry with backoff, mirroring _uw_common's 429
+    pattern; non-retryable HTTP errors raise immediately. Never fabricates."""
     key = os.environ.get("TIINGO_API_KEY")  # noqa: F405
     if not key:
         raise RuntimeError("TIINGO_API_KEY not set")
     query = urllib.parse.urlencode({"token": key, "startDate": start})
     url = f"{TIINGO_DAILY}/{ticker.lower()}/prices?{query}"
-    with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - https only
-        return json.load(resp) or []  # noqa: F405
+    last_err = None
+    for attempt in range(RETRIES + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:  # noqa: S310 - https only
+                return json.load(resp) or []  # noqa: F405
+        except urllib.error.HTTPError as e:
+            if e.code not in RETRY_STATUS:
+                raise
+            last_err = e
+        except urllib.error.URLError as e:      # DNS, refused, socket timeout
+            last_err = e
+        if attempt < RETRIES:
+            time.sleep(2.0 * (attempt + 1))     # 2s, 4s, 6s
+    raise last_err
 
 
 def build_bars(rows, asof):
@@ -65,7 +81,10 @@ def main(argv):
     except RuntimeError as e:
         print(e, file=sys.stderr)  # noqa: F405
         return 2
-    except Exception as e:  # noqa: BLE001 - urllib HTTPError/URLError, json decode, ...
+    except urllib.error.HTTPError as e:
+        print(f"tiingo HTTP {e.code} after retries: {e}", file=sys.stderr)  # noqa: F405
+        return 4 if e.code == 429 else 1
+    except Exception as e:  # noqa: BLE001 - URLError, json decode, ...
         print(e, file=sys.stderr)  # noqa: F405
         return 1
     bars = build_bars(rows, args.asof)
