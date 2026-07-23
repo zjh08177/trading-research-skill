@@ -1371,29 +1371,18 @@ class Driver:
 
     def stage4(self):
         self.stage_start("4", "risk")
+        # 4a — computed risk box → report Risk-box slot (inserted verbatim; invariant 16).
         self.run_script("scripts/risk_box.py", [self.p("10-datapack.json")],
                         stdout_to="40-riskbox-block.md")
-        block = self.read("40-riskbox-block.md")
-        view = self.make_view_dir("4b-risk", ["10-datapack.md", "30-debate.md",
-                                              "40-riskbox-block.md"])
-        prompt = self.build_prompt("risk", "risk", self._pack_md(), {
-            "debate_md": self.read("30-debate.md"), "riskbox_block": block})
-        text, res = self.worker_artifact(
-            "risk", self.routing["risk"], prompt, view, TIMEOUTS["risk"],
-            "risk", "40-risk-malformed.md", "risk", {"stage": "risk"})
-        if text is None:
-            # 40-risk.md still has to exist and still has to LEAD with the
-            # computed block: the judges' risk section is invariant-16 material,
-            # and a missing narration is a named gap, not a missing box.
-            self.write("40-risk.md", block.rstrip("\n") +
-                       "\n\nMISSING(risk-officer): the risk officer's narration was "
-                       "rejected twice by the accept gate; the computed block above is "
-                       "unaffected (invariant 16) and stands alone.\n")
-        else:
-            # No provenance headers here, deliberately: validate_artifact and the
-            # judge bundle both require the verbatim block to be the FIRST bytes.
-            self.write("40-risk.md", text.strip() + "\n")
-        self.stage_end("ok", "narration MISSING" if text is None else "ok")
+        # 4b (Feature 21 WS-A) — the risk officer is now DETERMINISTIC. render_risk.py
+        # emits the complete 40-risk.md (verbatim box + templated 1R-stop/event-risk/
+        # concentration) from the PACK ALONE. No LLM, no debate dependency, no position
+        # (invariant 12: 40-risk.md feeds the judge bundle and must stay position-blind).
+        # 40-risk.md is byte-equal to render_risk.py output, hardening invariant 16
+        # against narration drift; a missing box fact fails loud (render_risk exit 3).
+        self.run_script("scripts/render_risk.py", [self.p("10-datapack.json")],
+                        stdout_to="40-risk.md")
+        self.stage_end("ok", "deterministic")
 
     # ------------------------------------------------------------------
     # STAGE 5 — judge bundle, panel, tally
