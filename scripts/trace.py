@@ -353,13 +353,111 @@ def summarize(events, operator=None):
     }
 
 
-def load_summary(run_dir):
+# --- claude-code L2: reconstruct stage wall from artifact mtimes -------------
+# The claude-code host runs stages as native orchestrator turns, so there is no
+# driver process writing trace/trace.jsonl. But each stage writes a terminal
+# artifact, and its mtime marks the stage's completion -- the run dir IS the
+# execution timeline. We synthesize trace-schema stage-start/stage-end events
+# from these mtimes and feed the SAME pure summarize() the driver host uses, so
+# claude-code gets an L2 summary with zero new summary logic. What it cannot
+# recover (model_ms/wrapper_ms/stalls) is honestly absent, not faked.
+#
+# Each stage names the ONE artifact that reliably marks its completion (a
+# receipt/decision, never a late-rendered companion .md), and stages are
+# ordered by that artifact's MTIME -- not by number -- so genuinely
+# out-of-number-order completions (e.g. mean-reversion finishing after the
+# judge decision) are reported honestly instead of producing negative gaps.
+# Each stage lists candidate terminal-artifact patterns in PREFERENCE order:
+# the first pattern that matches any file wins, and that stage's completion is
+# the LATEST mtime among that pattern's matches (so a glob tolerates retry/
+# attempt files, e.g. `70-*` spanning several qa attempts). Receipt/decision
+# artifacts (current schema) come first; the older `.md` forms are fallbacks so
+# pre-receipt runs still reconstruct. Deliberately NO report/publish stage:
+# `60-report.md` is rewritten DURING the qa loop (a bad terminal), and the html/
+# ledger tail is post-pipeline bookkeeping OUTSIDE the footer's measured wall --
+# excluding it keeps the reconstructed total aligned with the footer.
+CLAUDE_STAGE_ARTIFACTS = [
+    ("1", "datapack", ["10-datapack.json"]),
+    ("1b", "position", ["15-position.json"]),
+    ("2", "analysts", ["20-analyst-receipts.json", "20-analyst-*.md"]),
+    ("3", "debate", ["30-debate.md"]),
+    ("4", "risk", ["40-risk-receipt.json", "40-risk.md"]),
+    ("4.5", "meanrev", ["53-meanrev-block.md"]),
+    ("5", "judges", ["55-decision.json", "55-rating-block.md"]),
+    ("6", "writer", ["60-writer-receipt.json"]),
+    ("7", "qa", ["70-qa-final.txt", "70-*.txt"]),
+]
+
+# Minimum present stages below which mtime reconstruction is too sparse to trust.
+_MIN_RECONSTRUCT_STAGES = 3
+# Below this fraction of the stage map, the reconstruction is flagged low-coverage
+# (fail-loud: the number is real but incomplete, never silently undercounted).
+_LOW_COVERAGE_FRACTION = 0.6
+
+
+def reconstruct_stages_from_artifacts(run_dir):
+    """Run dir -> (synthesized trace events, coverage dict) for a claude-code run
+    with no trace.jsonl, or (None, coverage) when too few stage artifacts are
+    present to trust (`_MIN_RECONSTRUCT_STAGES`) -- a sparse partial run must not
+    masquerade as a profiled one. `coverage` = {matched, total, missing} so the
+    caller can fail loud on an incomplete map match."""
+    run_dir = Path(run_dir)
+
+    def terminal_mtime(patterns):
+        for pat in patterns:
+            hits = [p for p in glob.glob(str(run_dir / pat)) if os.path.isfile(p)]
+            if hits:
+                return max(os.path.getmtime(p) for p in hits)
+        return None
+
+    present, missing = [], []
+    for code, name, patterns in CLAUDE_STAGE_ARTIFACTS:
+        mt = terminal_mtime(patterns)
+        if mt is not None:
+            present.append({"stage": code, "name": name, "mt": mt})
+        else:
+            missing.append(name)
+    coverage = {"matched": len(present), "total": len(CLAUDE_STAGE_ARTIFACTS),
+                "missing": missing}
+    if len(present) < _MIN_RECONSTRUCT_STAGES:
+        return None, coverage
+
+    present.sort(key=lambda s: s["mt"])
+    # t0: 00-scope.md if present (the run's true start), else the earliest
+    # terminal artifact -- never later than the first stage's mtime.
+    scope_p = run_dir / "00-scope.md"
+    scope_mt = os.path.getmtime(scope_p) if scope_p.exists() else None
+    t0 = min([m for m in (scope_mt, present[0]["mt"]) if m is not None])
+
+    name = run_dir.name  # e.g. UNH-2026-07-21-2147
+    ticker = name.split("-")[0] if name else None
+
+    events = [{"ev": "run-start", "schema": SCHEMA, "run_id": name,
+               "ticker": ticker, "mode": "claude-code",
+               "driver_version": "artifact-mtime"}]
+    prev = t0
+    for s in present:
+        wall_ms = int(round((s["mt"] - prev) * 1000))
+        events.append({"ev": "stage-start", "stage": s["stage"], "name": s["name"]})
+        events.append({"ev": "stage-end", "stage": s["stage"], "name": s["name"],
+                       "status": "ok", "wall_ms": wall_ms})
+        prev = s["mt"]
+    events.append({"ev": "run-end", "wall_ms": int(round((prev - t0) * 1000))})
+    return events, coverage
+
+
+def load_summary(run_dir, host="auto"):
     """`trace/summary.json` if present (recomputing it is NOT this function's
     job -- a hand-edited summary.json, e.g. in a fault-injection test, must be
-    read verbatim); otherwise recompute from `trace/trace.jsonl` (criterion 9)."""
+    read verbatim); otherwise recompute from `trace/trace.jsonl` (criterion 9).
+
+    Host detection (`host="auto"`): a trace.jsonl with events means the driver
+    host (codex/cursor) wrote L1 -- use it. No L1 means the claude-code host --
+    reconstruct stage wall from artifact mtimes. `host` may be forced to
+    `"claude-code"` or `"driver"` to override the auto-detection."""
     run_dir = Path(run_dir)
     summary_path = run_dir / "trace" / "summary.json"
-    if summary_path.exists():
+    if host == "auto" and summary_path.exists():
         try:
             return json.loads(summary_path.read_text(encoding="utf-8"))
         except ValueError:
@@ -372,6 +470,13 @@ def load_summary(run_dir):
         except ValueError:
             operator = None
     events = read_events(run_dir / "trace" / "trace.jsonl")
+    if host == "claude-code" or (host == "auto" and not events):
+        reconstructed, coverage = reconstruct_stages_from_artifacts(run_dir)
+        if reconstructed is not None:
+            summary = summarize(reconstructed, operator=operator)
+            summary["_host"] = "claude-code"
+            summary["_reconstruct"] = coverage
+            return summary
     return summarize(events, operator=operator)
 
 
@@ -383,7 +488,20 @@ def print_summary(summary, out=sys.stdout):
     ticker = summary.get("ticker") or "?"
     wall_ms = summary.get("driver_wall_ms")
     wall_s = f"{wall_ms / 1000:.0f}s" if isinstance(wall_ms, (int, float)) else "?"
-    print(f"run {run_id}  {ticker}  driver_wall {wall_s}", file=out)
+    wall_label = "wall" if summary.get("_host") == "claude-code" else "driver_wall"
+    print(f"run {run_id}  {ticker}  {wall_label} {wall_s}", file=out)
+    rec = summary.get("_reconstruct")
+    if isinstance(rec, dict):
+        matched, total = rec.get("matched"), rec.get("total")
+        note = (" LOW-COVERAGE" if isinstance(matched, int) and isinstance(total, int)
+                and matched < _LOW_COVERAGE_FRACTION * total else "")
+        print(f"  host claude-code · stage wall from artifact mtimes "
+              f"({matched}/{total} stages{note}); model/wrapper/stall detail N/A", file=out)
+        if rec.get("missing"):
+            # Any missing stage means the reconstructed wall is INCOMPLETE by that
+            # stage's time -- disclose it so the total is never read as the whole run.
+            print(f"  no artifact for: {', '.join(rec['missing'])} "
+                  f"(their wall is not in the total)", file=out)
     for st in summary.get("stages", []):
         pct = st.get("pct_of_driver_wall")
         pct_s = f"{pct:.0f}%" if isinstance(pct, (int, float)) else "?%"
@@ -431,7 +549,7 @@ def print_summary(summary, out=sys.stdout):
 
 
 def cmd_summary(args):
-    summary = load_summary(args.run_dir)
+    summary = load_summary(args.run_dir, host=args.host)
     print_summary(summary)
     return 0
 
@@ -696,6 +814,9 @@ def build_arg_parser():
 
     s = sub.add_parser("summary", help="where did this run's time go")
     s.add_argument("run_dir")
+    s.add_argument("--host", default="auto", choices=["auto", "claude-code", "driver"],
+                   help="auto: trace.jsonl present -> driver; absent -> claude-code "
+                        "(reconstruct stage wall from artifact mtimes)")
     s.set_defaults(func=cmd_summary)
 
     c = sub.add_parser("compare", help="did my change help")

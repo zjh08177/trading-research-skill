@@ -622,6 +622,76 @@ def test_parse_codex_rollout_returns_host_neutral_intermediate():
     assert computed == full
 
 
+# --- claude-code L2: artifact-mtime stage reconstruction --------------------
+# mtimes do not survive git, so the run dir is built with os.utime() to known
+# offsets -- hermetic, no real run needed.
+
+def _mk_claude_run(tmp_path, name="AAPL-2026-07-21-1500", files=None):
+    """Build a fake claude-code run dir; `files` maps filename -> mtime offset
+    (seconds after t0). Returns (run_dir, t0)."""
+    run = tmp_path / name
+    run.mkdir()
+    t0 = 1_700_000_000.0
+    (run / "00-scope.md").write_text("scope")
+    os.utime(run / "00-scope.md", (t0, t0))
+    for fn, off in (files or {}).items():
+        p = run / fn
+        p.write_text("x")
+        os.utime(p, (t0 + off, t0 + off))
+    return run, t0
+
+
+_CURRENT_SCHEMA = {
+    "10-datapack.json": 100, "15-position.json": 200,
+    "20-analyst-receipts.json": 500, "30-debate.md": 900,
+    "40-risk-receipt.json": 1000,
+    "55-decision.json": 1050,          # judges finish BEFORE meanrev (out of number order)
+    "53-meanrev-block.md": 1100,
+    "60-writer-receipt.json": 2000,
+    "70-qa-prose-attempt1.txt": 2500,  # a qa attempt...
+    "70-qa-final.txt": 3000,           # ...glob must take the LATEST (qa-final)
+    "60-report.md": 2900,              # written during qa -- must NOT become a stage
+}
+
+
+def test_claude_code_reconstruction_orders_by_mtime_and_ignores_report_md(tmp_path):
+    run, _ = _mk_claude_run(tmp_path, files=_CURRENT_SCHEMA)
+    summ = trace_mod.load_summary(run, host="auto")  # no trace.jsonl -> claude-code
+    assert summ["_host"] == "claude-code"
+    assert summ["_reconstruct"]["matched"] == 9 and summ["_reconstruct"]["total"] == 9
+    assert summ["driver_wall_ms"] == 3_000_000  # t0 -> qa-final (3000s)
+
+    walls = {s["name"]: s["wall_ms"] for s in summ["stages"]}
+    assert "report" not in walls                # 60-report.md ignored
+    assert walls["qa"] == 1_000_000             # 2000->3000, glob took qa-final not attempt1
+    assert walls["writer"] == 900_000           # 1100->2000
+    assert walls["judges"] == 50_000            # ordered by mtime: judges(1050) before meanrev(1100)
+    assert walls["meanrev"] == 50_000
+
+    # stage ORDER reflects completion time: judges precedes meanrev though 55>53
+    order = [s["stage"] for s in sorted(summ["stages"], key=lambda s: -(s["wall_ms"] or 0))]
+    assert "5" in order and "4.5" in order
+
+
+def test_claude_code_reconstruction_flags_missing_stage(tmp_path):
+    files = dict(_CURRENT_SCHEMA)
+    del files["60-writer-receipt.json"]         # pre-receipt shape: no writer terminal
+    run, _ = _mk_claude_run(tmp_path, files=files)
+    summ = trace_mod.load_summary(run, host="auto")
+    assert summ["_reconstruct"]["matched"] == 8
+    assert "writer" in summ["_reconstruct"]["missing"]
+
+
+def test_claude_code_reconstruction_declines_when_too_sparse(tmp_path):
+    run, _ = _mk_claude_run(tmp_path, files={"10-datapack.json": 100})  # 1 stage only
+    events, coverage = trace_mod.reconstruct_stages_from_artifacts(run)
+    assert events is None                        # below _MIN_RECONSTRUCT_STAGES
+    assert coverage["matched"] == 1
+    # load_summary falls back to the empty-trace path, not a fabricated wall
+    summ = trace_mod.load_summary(run, host="claude-code")
+    assert summ.get("_host") is None and not summ.get("stages")
+
+
 # --- criterion 8: no side effects on run_stats.py ---------------------------
 
 
