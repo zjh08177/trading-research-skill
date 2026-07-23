@@ -12,7 +12,7 @@ See vault `Projects/personal/tradingagents/v2-skillify/impl-plan/impl-plan-repor
 | `build_datapack.py` | Per equity/ADR/ETF ticker: run vendor CLIs → merge → derive mcap/PE → tiingo cross-check → `10-datapack.*` + `15-position.*`. Arg: JSON `[[ticker,kind],...]`. |
 | `build_crypto_pack.py` | Per crypto: turn a saved Crypto.com raw JSON (`{ticker,candles}`, fetched via MCP by the orchestrator) into `10-datapack.*` + `15-position.*`. Args: `<TICKER> <raw.json> <holdings.json> [asof] [stamp]`. |
 | `build_dossier.py` | Assemble the self-contained HTML dossier (overview scorecard + every `60-report.md` via `render_report.md_to_html` + client nav). |
-| `publish_ledger.py` | Copy each `60-report.md/.html` to the vault + append one look-ahead-guarded ledger row per ticker. |
+| `publish_ledger.py` | Copy each `60-report.md` to the vault **canonical per-name location** `reports/single-ticker/<TICKER>/<TICKER>-<asof>.md` (vault `reports/_index.md` taxonomy; mirrors the replay publisher's `reports/replay/<T>/`) + append one look-ahead-guarded ledger row per ticker (its `report_path` matches). Book-level dossiers go to `reports/portfolio/portfolio-dossier-<asof>.html`. Never write reports flat at the `reports/` root. |
 | `../../workflows/portfolio_pipeline.js` | Workflow: analysts→debate→risk→N=5 opus judges→tally→writer→QA, pipelined across all tickers. Writers emit schema-v2 `LEVELS_JSON`, not legacy flat `LEVELS:`. |
 | `../../workflows/rewrite_writers.js` | Workflow: re-run only the opus writer on existing runs (reuse cached ratings) — for prompt/format upgrades without re-judging. |
 

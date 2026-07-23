@@ -34,9 +34,19 @@ NEW in schema-v2 — do these:
 
 Write the finished report to ${dir}/60-report.md (overwrite). Return the "## Your position" section text only.`
 
-const results = await parallel(items.map((it) => () =>
-  agent(writerPrompt(it.run_dir, it.ticker, it.kind),
+// findings guardrail #6: this rewrite path unconditionally reads 15-position.json
+// via writerPrompt's fixed template — a replay run never has that file (or a live
+// position at all), so mode==="replay" items are REJECTED before writerPrompt is
+// ever constructed or sent to an agent. Rewrite-writers stays a live-only tool;
+// replay reports are produced (and re-produced) exclusively by portfolio_pipeline.js.
+const results = await parallel(items.map((it) => () => {
+  if (it.mode === 'replay') {
+    log(`REWRITE REJECTED ${it.ticker}: mode=replay is not supported by rewrite_writers.js (would read 15-position.json which never exists for a replay run)`)
+    return Promise.resolve({ ticker: it.ticker, ok: false, err: 'rejected: mode=replay not supported by rewrite_writers.js' })
+  }
+  return agent(writerPrompt(it.run_dir, it.ticker, it.kind),
     { phase: 'Writer', model: 'opus', effort: 'high', label: `rewrite:${it.ticker}` })
     .then((r) => ({ ticker: it.ticker, ok: !!r }))
-    .catch((e) => ({ ticker: it.ticker, ok: false, err: String(e).slice(0, 120) }))))
+    .catch((e) => ({ ticker: it.ticker, ok: false, err: String(e).slice(0, 120) }))
+}))
 return results

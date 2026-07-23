@@ -17,5 +17,12 @@ You are the pipeline **orchestrator**, host = **cursor**.
    run plan-mode against temp files and are collected into `50-votes/`; the HTML
    deliverable degrades to a local file (no Artifact tool on Cursor).
 4. Single-ticker only — batch, the daily monitor, and crypto stay Claude-Code-only.
+5. **Historical as-of replay** (`<TICKER> <YYYY-MM-DD>` or `<YYYY/MM/DD>` past
+   date): follow SKILL.md's **## Historical as-of replay** section. No
+   `15-position.json` position artifact is produced or read. No WebSearch
+   evidence is gathered by any agent stage — the sentiment/analyst role must
+   rely on Marketaux/pack data only and mark `DATA GAP` when it is empty.
+   Publish to `reports/replay/<TICKER>/`, never `reports/single-ticker/`.
+   Single-ticker only, same as the rest of this host.
 
 This entry is a pointer: all pipeline logic lives in SKILL.md, not here.

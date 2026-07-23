@@ -168,3 +168,196 @@ def test_evolve_warns_on_duplicate_run_id_and_handles_batch_parent(tmp_path):
     assert "duplicate run_id: AAPL-2026-07-05-1300" in r.stderr
     index = json.loads((out / "10-corpus-index.json").read_text())
     assert any(row["join_status"] == "batch-parent" for row in index["runs"])
+
+
+def test_default_excludes_replay_tainted_usage_rows(tmp_path):
+    runs = tmp_path / "runs"
+    _run_dir(runs, "NVDA-2026-07-05-1300")
+    ledger = tmp_path / "ledger.jsonl"
+    _jsonl(ledger, [])
+    usage = tmp_path / "usage.jsonl"
+    _jsonl(usage, [
+        {"v": 1, "event": "end", "invocation_id": "u1", "ts": "2026-07-05T18:00:00Z",
+         "host": "cursor", "source": "skill-helper", "skill": "trading-research",
+         "mode": "report", "ticker": "NVDA", "run_id": "NVDA-2026-07-05-1300",
+         "run_dir": str(runs / "NVDA-2026-07-05-1300"), "status": "success",
+         "report_paths": [str(runs / "NVDA-2026-07-05-1300" / "60-report.md")]},
+        {"v": 1, "event": "end", "invocation_id": "u2", "ts": "2026-07-06T18:00:00Z",
+         "host": "codex", "source": "skill-helper", "skill": "trading-research",
+         "mode": "replay", "ticker": "TSLA", "run_id": "TSLA-2026-06-21-1400",
+         "status": "success"},
+        {"v": 1, "event": "end", "invocation_id": "u3", "ts": "2026-07-06T19:00:00Z",
+         "host": "cursor", "source": "skill-helper", "skill": "trading-research",
+         "mode": "report", "ticker": "AMD", "run_id": "AMD-2026-07-06-0900",
+         "status": "success",
+         "report_paths": ["reports/replay/AMD/AMD-2026-07-06-0900.md"]},
+    ])
+    out = tmp_path / "out"
+    r = subprocess.run(
+        [sys.executable, str(SCRIPTS / "evolve.py"),
+         "--usage-ledger", str(usage), "--ledger", str(ledger),
+         "--runs-dir", str(runs), "--outdir", str(out), "--before", "2026-07-08"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+
+    index = json.loads((out / "10-corpus-index.json").read_text())
+    ids = {row["run_id"] for row in index["runs"]}
+    assert ids == {"NVDA-2026-07-05-1300"}
+    assert ("excluded replay-tainted usage row from live index: "
+            "run_id=TSLA-2026-06-21-1400") in r.stderr
+    assert ("excluded replay-tainted usage row from live index: "
+            "run_id=AMD-2026-07-06-0900") in r.stderr
+
+    signals = json.loads((out / "20-signals.json").read_text())
+    assert signals["coverage"]["total_runs"] == 1
+    assert "evidence_type_counts" not in signals
+
+
+def test_include_replay_indexes_replay_ledger_and_left_joins_usage(tmp_path):
+    runs = tmp_path / "runs"
+    _run_dir(runs, "NVDA-2026-07-05-1300")
+    ledger = tmp_path / "ledger.jsonl"
+    _jsonl(ledger, [])
+    replay_ledger = tmp_path / "ledger-replay.jsonl"
+    _jsonl(replay_ledger, [
+        {"run_id": "TSLA-2025-06-21-1400", "ticker": "TSLA", "evidence_type": "replay",
+         "requested_cutoff": "2025-06-21", "generated_at": "2026-07-01T12:00:00Z",
+         "mode_rating": "Hold", "wall_s": 12.5, "cost_usd": 0.42},
+        {"run_id": "AMD-2025-06-22-0900", "ticker": "AMD", "evidence_type": "replay",
+         "requested_cutoff": "2025-06-22", "generated_at": "2026-07-02T12:00:00Z",
+         "mode_rating": "Buy", "wall_s": 9.0, "cost_usd": 0.10},
+    ])
+    usage = tmp_path / "usage.jsonl"
+    _jsonl(usage, [
+        {"v": 1, "event": "end", "invocation_id": "u1", "ts": "2026-07-05T18:00:00Z",
+         "host": "cursor", "source": "skill-helper", "skill": "trading-research",
+         "mode": "report", "ticker": "NVDA", "run_id": "NVDA-2026-07-05-1300",
+         "run_dir": str(runs / "NVDA-2026-07-05-1300"), "status": "success",
+         "report_paths": [str(runs / "NVDA-2026-07-05-1300" / "60-report.md")]},
+        {"v": 1, "event": "end", "invocation_id": "u2", "ts": "2026-07-01T18:00:00Z",
+         "host": "codex", "source": "skill-helper", "skill": "trading-research",
+         "mode": "replay", "ticker": "TSLA", "run_id": "TSLA-2025-06-21-1400",
+         "status": "success", "wall_s": 13.0},
+    ])
+    out = tmp_path / "out"
+    r = subprocess.run(
+        [sys.executable, str(SCRIPTS / "evolve.py"),
+         "--usage-ledger", str(usage), "--ledger", str(ledger),
+         "--runs-dir", str(runs), "--outdir", str(out), "--before", "2026-07-08",
+         "--include-replay"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+
+    index = json.loads((out / "10-corpus-index.json").read_text())
+    replay_by_id = {row["run_id"]: row for row in index["replay_runs"]}
+    assert set(replay_by_id) == {"TSLA-2025-06-21-1400", "AMD-2025-06-22-0900"}
+
+    tsla = replay_by_id["TSLA-2025-06-21-1400"]
+    assert tsla["evidence_type"] == "replay"
+    assert tsla["join_status"] == "replay-ledgered"
+    assert tsla["host"] == "codex"
+    assert tsla["wall_s"] == 13.0  # left-joined usage value preferred over ledger's 12.5
+
+    amd = replay_by_id["AMD-2025-06-22-0900"]
+    assert amd["evidence_type"] == "replay"
+    assert amd["join_status"] == "replay-ledgered-no-usage"
+    assert amd["wall_s"] == 9.0  # no matching usage row -> falls back to ledger value
+
+    # replay evidence never leaks into the live index
+    live_ids = {row["run_id"] for row in index["runs"]}
+    assert live_ids == {"NVDA-2026-07-05-1300"}
+    assert "TSLA-2025-06-21-1400" not in live_ids
+    assert "AMD-2025-06-22-0900" not in live_ids
+
+
+def test_evidence_type_counts_split_and_calibration_isolated(tmp_path):
+    runs = tmp_path / "runs"
+    _run_dir(runs, "NVDA-2026-07-05-1300")
+    ledger = tmp_path / "ledger.jsonl"
+    _jsonl(ledger, [
+        {"run_id": "NVDA-2026-07-05-1300", "ticker": "NVDA", "date_utc": "2026-07-05",
+         "mode_rating": "Buy", "distribution": {"Buy": 3}, "spread": 0,
+         "no_call": False, "gaps": []},
+    ])
+    ledger_resolved = tmp_path / "ledger-resolved.jsonl"
+    _jsonl(ledger_resolved, [
+        {"run_id": "NVDA-2026-07-05-1300", "resolution_date": "2026-07-06", "horizon_td": 1},
+        {"run_id": "OLD-2026-06-01-0900", "resolution_date": "2026-07-07", "horizon_td": 5},
+    ])
+    replay_ledger = tmp_path / "ledger-replay.jsonl"
+    _jsonl(replay_ledger, [
+        {"run_id": "TSLA-2025-06-21-1400", "ticker": "TSLA", "evidence_type": "replay",
+         "requested_cutoff": "2025-06-21", "generated_at": "2026-07-01T12:00:00Z"},
+        {"run_id": "AMD-2025-06-22-0900", "ticker": "AMD", "evidence_type": "replay",
+         "requested_cutoff": "2025-06-22", "generated_at": "2026-07-02T12:00:00Z"},
+    ])
+    replay_resolved = tmp_path / "ledger-replay-resolved.jsonl"
+    _jsonl(replay_resolved, [
+        {"run_id": "TSLA-2025-06-21-1400", "resolution_date": "2026-07-03",
+         "horizon_td": 1, "evidence_type": "replay"},
+    ])
+    usage = tmp_path / "usage.jsonl"
+    _jsonl(usage, [
+        {"v": 1, "event": "end", "invocation_id": "u1", "ts": "2026-07-05T18:00:00Z",
+         "host": "cursor", "source": "skill-helper", "skill": "trading-research",
+         "mode": "report", "ticker": "NVDA", "run_id": "NVDA-2026-07-05-1300",
+         "run_dir": str(runs / "NVDA-2026-07-05-1300"), "status": "success",
+         "report_paths": [str(runs / "NVDA-2026-07-05-1300" / "60-report.md")]},
+    ])
+    out = tmp_path / "out"
+    r = subprocess.run(
+        [sys.executable, str(SCRIPTS / "evolve.py"),
+         "--usage-ledger", str(usage), "--ledger", str(ledger),
+         "--runs-dir", str(runs), "--outdir", str(out), "--before", "2026-07-08",
+         "--include-replay"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+
+    signals = json.loads((out / "20-signals.json").read_text())
+    assert signals["evidence_type_counts"] == {"live": 1, "replay": 2}
+    assert signals["live_calibration"]["evidence_type"] == "live"
+    assert signals["live_calibration"]["n_resolved"] == 2
+    assert signals["calibration"]["n_resolved"] == 2  # base calibration key unaffected
+    assert signals["replay_calibration"]["evidence_type"] == "replay"
+    assert signals["replay_calibration"]["n_resolved"] == 1
+
+
+def test_legacy_row_without_generated_at_still_uses_date_utc_fallback(tmp_path):
+    runs = tmp_path / "runs"
+    _run_dir(runs, "IBM-2026-07-05-1000")
+    ledger = tmp_path / "ledger.jsonl"
+    _jsonl(ledger, [
+        {"run_id": "IBM-2026-07-05-1000", "ticker": "IBM", "date_utc": "2026-07-05",
+         "mode_rating": "Hold", "distribution": {"Hold": 3}, "spread": 0,
+         "no_call": False, "gaps": []},
+    ])
+    usage = tmp_path / "usage.jsonl"
+    _jsonl(usage, [
+        {"v": 1, "event": "end", "invocation_id": "u1", "ts": "2026-07-05T18:00:00Z",
+         "host": "cursor", "source": "skill-helper", "skill": "trading-research",
+         "mode": "report", "ticker": "IBM", "run_id": "IBM-2026-07-05-1000",
+         "run_dir": str(runs / "IBM-2026-07-05-1000"), "status": "success",
+         "report_paths": [str(runs / "IBM-2026-07-05-1000" / "60-report.md")]},
+    ])
+    out = tmp_path / "out"
+    r = subprocess.run(
+        [sys.executable, str(SCRIPTS / "evolve.py"),
+         "--usage-ledger", str(usage), "--ledger", str(ledger),
+         "--runs-dir", str(runs), "--outdir", str(out), "--before", "2026-07-08"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+
+    index = json.loads((out / "10-corpus-index.json").read_text())
+    ids = {row["run_id"] for row in index["runs"]}
+    assert ids == {"IBM-2026-07-05-1000"}
+    row = index["runs"][0]
+    assert "generated_at" not in row.get("ledger", {})
+    assert row["date_utc"] == "2026-07-05"

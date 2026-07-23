@@ -52,14 +52,18 @@ def main():
             continue
         dec = json.load(open(f"{run_dir}/55-decision.json"))
         dist = dist_from_votes(run_dir)
-        vault_report = f"{VAULT}/reports/{t}-{asof}.md"
+        # Per-name reports live under reports/single-ticker/<TICKER>/ (vault
+        # _index.md taxonomy; mirrors the replay publisher's reports/replay/<T>/).
+        rel_report = f"reports/single-ticker/{t}/{t}-{asof}.md"
+        vault_report = f"{VAULT}/{rel_report}"
+        os.makedirs(os.path.dirname(vault_report), exist_ok=True)
         shutil.copyfile(f"{run_dir}/60-report.md", vault_report)
         row = {
             "run_id": f"{t}-{asof}-{stamp}", "ticker": t, "date_utc": date_utc, "as_of": asof,
             "job": "J1-position-aware", "mode_rating": dec.get("mode_label") or dec.get("decision"),
             "distribution": dist, "spread": dec.get("spread"),
             "no_call": dec.get("decision") == "no-call", "gaps": [],
-            "report_path": f"reports/{t}-{asof}.md", "cost_usd": cost_per, "wall_s": wall_per,
+            "report_path": rel_report, "cost_usd": cost_per, "wall_s": wall_per,
         }
         r = subprocess.run(["python3", f"{SK}/scripts/ledger.py", "--ledger", LEDGER,
                             "append", "--row", json.dumps(row)],

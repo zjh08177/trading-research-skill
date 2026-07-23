@@ -1,0 +1,7 @@
+UNH is a Hold pending trend confirmation. EPS growth outpaced revenue growth [P3.eps_yoy] [P3.revenue_yoy], while price remains above all major averages [P9.stretch_sma20_atr] [P9.stretch_sma50_atr] [P9.stretch_sma200_atr]. However, valuation sensitivity, thin margins, and material net debt leave little room for execution weakness [P3.pe_ttm] [P3.operating_margin_ttm] [P3.net_margin_ttm] [P3.net_debt]. DATA GAP: forward guidance, segment trends, and medical-cost drivers.
+
+Near-term momentum is mixed: MACD trails its signal [P2.macd] [P2.macd_signal], participation was only modestly above normal [P0.rel_volume], and the SMA50 stretch is substantial [P9.stretch_sma50_atr]. There is no climax [P9.climax], but clustered conditions [P9.cluster_status] make a counter-trend entry premature. The annual high provides bull confirmation [P1.high_52w], while SMA50 supplies falsifiable invalidation [P2.sma50]. Directional base rates favor upside, but macro-cycle evidence is insufficiently calibrated [P9.base_rate_direction] [P9.base_rate_n_macro] [P9.base_rate_ci_note]. The missing bear challenge reduces conviction without implying concession.
+
+KEY POINTS: • Growth and trend support upside. • Extension, valuation sensitivity, and incomplete downside coverage justify waiting.
+
+VERDICT: Hold | CONVICTION: 7 | ENTRY-PATH: right-side closer; left-side pending ([P9.exhaustion_tally] exhaustion-turning conditions met), clustered | WHY: Trend and growth remain constructive, but extension and unverified earnings durability make confirmation necessary.

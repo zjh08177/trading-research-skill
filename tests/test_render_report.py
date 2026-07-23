@@ -115,6 +115,30 @@ def test_rail_and_panel_render():
     assert "kpanel" in panel and "Price" in panel
 
 
+BAD_LEVELS_REPORT_FOR_RENDER = """# SOXL
+### Ensemble Rating: **Hold**
+
+## Risk box
+LEVELS_JSON:
+```json
+{"schema": 2, "spot": 142.48, "triggers": [
+  {"side": "downside", "intended_action": "Buy", "level": 140.0,
+   "basis": "test", "comparison": "close_below", "action_strength": "act",
+   "rating_gate": "none", "conditions": []}
+]}
+```
+"""
+
+
+def test_render_report_exits_3_on_invariant_19_violation(tmp_path):
+    d = tmp_path
+    (d / "10-datapack.json").write_text("{}")
+    (d / "60-report.md").write_text(BAD_LEVELS_REPORT_FOR_RENDER)
+    code = rr.main([str(d / "60-report.md"), str(d / "60-report.html")])
+    assert code == 3
+    assert not (d / "56-levels.json").exists()
+
+
 def test_rail_uses_actual_action_label_not_hardcoded_exit():
     lv = {"spot": 100.0,
           "downside": {"level": 95.0, "action": "Trim", "basis": "SMA20", "atr_dist": 1.0},

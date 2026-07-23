@@ -17,6 +17,7 @@ Env (vendor invocation, matching the skill-venv convention):
   SNAPTRADE_HOLDINGS_PY   skill venv python (default pinned below)
   SNAPTRADE_HOLDINGS_CLI  holdings CLI path (default pinned below)
 """
+import argparse
 import datetime
 import json
 import os
@@ -77,13 +78,39 @@ def _default_runner():
     return r.returncode, r.stdout
 
 
+def _parse_args(argv):
+    """Consume the CLI BEFORE any positional binding or vendor call, so an
+    option-looking token can never become the output directory: a routine
+    ``--help`` probe once bound ``--help`` as <holdings_history_dir>, performed a
+    LIVE SnapTrade fetch, and wrote real position JSON into ``./--help/`` in an
+    ungitignored tree (R4 near-miss). Returns (args, exit_code); exit_code is not
+    None when argparse already handled the invocation (``-h`` → 0, bad flag → 2).
+    Positional invocation is unchanged — build_datapack.py and SKILL.md call it
+    as ``snapshot_holdings.py <dir> [asof]``."""
+    parser = argparse.ArgumentParser(
+        prog="snapshot_holdings.py",
+        description="Write the day's holdings snapshot (the holdings SSOT) to "
+                    "<holdings_history_dir>/YYYY-MM-DD.json.")
+    parser.add_argument("holdings_history_dir",
+                        help="output dir, e.g. reports/portfolio/holdings-history")
+    parser.add_argument("asof_date", nargs="?", default=None,
+                        help="YYYY-MM-DD (default: today)")
+    try:
+        return parser.parse_args(argv), None
+    except SystemExit as e:                    # -h/--help or an unparseable flag
+        return None, int(e.code or 0)
+
+
 def main(argv=None, runner=None):
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
         sys.stderr.write("usage: snapshot_holdings.py <holdings_history_dir> [asof_date]\n")
         return 1
-    out_dir = argv[0]
-    asof_date = argv[1] if len(argv) > 1 else datetime.date.today().isoformat()
+    args, rc = _parse_args(argv)
+    if rc is not None:                         # nothing fetched, nothing written
+        return rc
+    out_dir = args.holdings_history_dir
+    asof_date = args.asof_date or datetime.date.today().isoformat()
     runner = runner or _default_runner
 
     rc, stdout = runner()

@@ -151,6 +151,54 @@ def test_alias_ticker_normalized(monkeypatch, capsys, payload):
     assert calls[0][1]["symbols"] == "GC=F"  # normalize_symbol("gold")
 
 
+def test_replay_filters_after_cutoff_and_untimestamped(monkeypatch, capsys):
+    response = {"data": [
+        {
+            "title": "Accepted headline", "source": "wireA",
+            "published_at": "2026-06-30T10:00:00.000000Z",
+            "url": "https://example.com/ok",
+            "entities": [{"symbol": "NVDA", "sentiment_score": 0.5}],
+        },
+        {
+            "title": "After cutoff headline", "source": "wireB",
+            "published_at": "2026-07-02T09:00:00.000000Z",
+            "url": "https://example.com/late",
+            "entities": [{"symbol": "NVDA", "sentiment_score": 0.2}],
+        },
+        {
+            "title": "Untimestamped headline", "source": "wireC",
+            "published_at": None,
+            "url": "https://example.com/none",
+            "entities": [{"symbol": "NVDA", "sentiment_score": -0.1}],
+        },
+    ]}
+    code, out, _ = run_main(
+        monkeypatch, capsys,
+        ["--ticker", "NVDA", "--asof", "2026-07-01", "--days", "7", "--replay"],
+        response=response,
+    )
+    assert code == 0
+    facts = json.loads(out.out)
+    rows = facts["P5.headlines"]["v"]
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Accepted headline"
+    gaps = facts["P5._gaps"]
+    assert len(gaps) == 2
+    assert any("After cutoff headline" in g for g in gaps)
+    assert any("Untimestamped headline" in g for g in gaps)
+
+
+def test_non_replay_mode_has_no_gaps_key(monkeypatch, capsys, payload):
+    code, out, _ = run_main(
+        monkeypatch, capsys,
+        ["--ticker", "NVDA", "--asof", "2026-07-01", "--days", "7"],
+        response=payload,
+    )
+    assert code == 0
+    facts = json.loads(out.out)
+    assert "P5._gaps" not in facts
+
+
 def test_window_math(monkeypatch, capsys, payload):
     _, _, calls = run_main(
         monkeypatch, capsys,

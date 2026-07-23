@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Job A daily capture. Runs Mon-Fri at 13:35 LOCAL time.
+  NOTE: adjust HourOfDay to land AFTER the 4pm ET close in YOUR machine's timezone
+  (13:35 America/Los_Angeles = 16:35 ET). Holidays still fire; Job B aligns to real
+  UW bars so a holiday cohort with no t0 bar self-skips.
+
+  Install:  cp this file to ~/Library/LaunchAgents/com.mt-alpha-capture.plist
+            launchctl load ~/Library/LaunchAgents/com.mt-alpha-capture.plist
+  Uninstall: launchctl unload ~/Library/LaunchAgents/com.mt-alpha-capture.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mt-alpha-capture</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/bytedance/Work/Damn/trading-research-skill/.venv/bin/python3</string>
+    <string>/Users/bytedance/Work/Damn/trading-research-skill/market-terminal-alpha/scripts/mt_capture.py</string>
+    <string>--index-etf</string>
+    <string>SPY</string>
+    <string>--sleep-ms</string>
+    <string>200</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/bytedance/Work/Damn/trading-research-skill</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MT_ALPHA_DIR</key>
+    <string>/Users/bytedance/trading-reports/marketterminal</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>35</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>13</integer><key>Minute</key><integer>35</integer></dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/bytedance/trading-reports/marketterminal/capture.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/bytedance/trading-reports/marketterminal/capture.err.log</string>
+</dict>
+</plist>

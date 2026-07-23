@@ -18,7 +18,12 @@ const items = (typeof args === 'string' ? JSON.parse(args) : args) // [{ticker,k
 async function usageTerminal(it, ok, reportPath, errText) {
   if (!it.invocation_id) return
   const runIdArg = it.run_id ? `--run-id ${it.run_id}` : ''
-  const common = `--invocation-id ${it.invocation_id} --ticker ${it.ticker} ${runIdArg} --run-dir ${it.run_dir}`
+  // findings guardrail #3: build_datapack.py stamps mode=replay on the START row;
+  // the pipeline must carry the SAME --mode through onto BOTH terminal calls (end
+  // AND fail) so a replay run's terminal usage rows never silently fall back to
+  // mode=report. Live items carry no `mode` field at all (byte-identical to today).
+  const modeArg = it.mode ? `--mode ${it.mode}` : ''
+  const common = `--invocation-id ${it.invocation_id} --ticker ${it.ticker} ${runIdArg} --run-dir ${it.run_dir} ${modeArg}`
   const cmd = ok
     ? `${SK}/.venv/bin/python ${SK}/scripts/usage.py end ${common} --report-path ${reportPath} --exit-code 0`
     : `${SK}/.venv/bin/python ${SK}/scripts/usage.py fail ${common} --exit-code 1`
@@ -29,6 +34,61 @@ async function usageTerminal(it, ok, reportPath, errText) {
   } catch (e) {
     log(`USAGE TERMINAL FAILED ${it.ticker}: ${String(e).slice(0, 160)}`)
   }
+}
+
+// findings guardrail #2 (00-scope.json contract): a replay item (mode==="replay",
+// stamped by build_datapack.py --replay) MUST have a matching, parseable
+// `<run_dir>/00-scope.json` BEFORE any agent stage runs — that file is the sole
+// authority a downstream agent (sentiment analyst, writer, QA) can trust for
+// mode/cutoff/as-of provenance. FAIL CLOSED: throw if it is missing, unparseable,
+// or disagrees with the item on ticker/mode/requested_cutoff. Live items never
+// write 00-scope.json (see build_datapack.py's live branch + its own test) — that
+// absence is expected and MUST NOT fail the live path (Live behavior unchanged).
+async function loadAndCheckScope(it) {
+  const { ticker, run_dir: dir } = it
+  const isReplay = it.mode === 'replay'
+  const expectMode = it.mode || 'live'
+  const expectCutoff = it.requested_cutoff || ''
+  const scopePath = `${dir}/00-scope.json`
+  const cmd = `${SK}/.venv/bin/python -c "
+import json, os, sys
+t, m, c, p, replay_required = sys.argv[1:6]
+if not os.path.exists(p):
+    if replay_required == '1':
+        print(json.dumps({'valid': False, 'error': 'missing scope file: ' + p}))
+        sys.exit(1)
+    print(json.dumps({'valid': True, 'skipped': True}))
+    sys.exit(0)
+try:
+    s = json.load(open(p))
+except Exception as e:
+    print(json.dumps({'valid': False, 'error': 'unparseable scope file ' + p + ': ' + str(e)}))
+    sys.exit(1)
+errs = []
+if s.get('ticker') != t:
+    errs.append('ticker item=' + t + ' scope=' + str(s.get('ticker')))
+if s.get('mode', 'live') != m:
+    errs.append('mode item=' + m + ' scope=' + str(s.get('mode')))
+if c and s.get('requested_cutoff') != c:
+    errs.append('requested_cutoff item=' + c + ' scope=' + str(s.get('requested_cutoff')))
+if errs:
+    print(json.dumps({'valid': False, 'error': '; '.join(errs)}))
+    sys.exit(1)
+print(json.dumps({'valid': True, 'generated_at': s.get('generated_at')}))
+" "${ticker}" "${expectMode}" "${expectCutoff}" "${scopePath}" "${isReplay ? '1' : '0'}"`
+  const result = await agent(
+    `Run EXACTLY this bash command and return its stdout verbatim, nothing else:\n${cmd}`,
+    { phase: 'Scope', model: 'haiku', effort: 'low', schema: {
+      type: 'object', additionalProperties: true,
+      properties: {
+        valid: { type: 'boolean' }, error: { type: ['string', 'null'] },
+        generated_at: { type: ['string', 'null'] }, skipped: { type: ['boolean', 'null'] },
+      }, required: ['valid'],
+    }, label: `scope:${ticker}` })
+  if (!result || result.valid !== true) {
+    throw new Error(`SCOPE_MISMATCH ${ticker}: ${(result && result.error) || '00-scope.json missing/unparseable/mismatched'}`)
+  }
+  return { isReplay, generatedAt: result.generated_at || null }
 }
 
 const HOUSE = (dir) => `You are one agent in a trading-research pipeline. Ground EVERY claim in the DATA PACK at ${dir}/10-datapack.md (fact-id keyed as [P#.fact]). Read it FIRST with the Read tool.
@@ -49,14 +109,21 @@ const debater = (dir, ticker, side, wave, file, extra) => agent(
 async function runTicker(it) {
   const { ticker, kind, run_dir: dir } = it
   try {
+    // findings guardrail #2: load + fail-closed-validate 00-scope.json BEFORE any
+    // agent stage runs. Gated on it.mode==='replay' inside loadAndCheckScope so the
+    // live path (no 00-scope.json ever written) stays byte-identical to today.
+    const scope = await loadAndCheckScope(it)
+    const isReplay = scope.isReplay
+    const sentimentMission = isReplay
+      ? 'Mission: summarize the tape from P5 (dated headlines) + P6 (sentiment tone). Separate durable narrative from noise; weight recency; quote headline dates from P5. If P6 is DATA GAP, say so; do not infer sentiment from price. HISTORICAL REPLAY (as of ' + it.requested_cutoff + '): Do not use WebSearch or current web data; if Marketaux is empty, mark DATA GAP. Never surface post-cutoff information.'
+      : 'Mission: summarize the tape from P5 (dated headlines) + P6 (sentiment tone). Separate durable narrative from noise; weight recency; quote headline dates from P5. If P6 is DATA GAP, say so; do not infer sentiment from price. If you have a WebSearch tool, you MAY add the next earnings date and 1-2 recent catalysts citing the URL on the same line, LABELED "(discovery, not point-in-time)"; if not, mark next-earnings DATA GAP.'
     // Stage 2 — analysts x3
     await parallel([
       () => analyst(dir, ticker, kind, 'Fundamental analyst', '20-analyst-fund.md',
         'Mission: judge business quality and valuation from P3 (financials) + P1 (quote/mcap): growth durability, margins, balance sheet, whether the multiple is supported. If P3 is MISSING (crypto/ETF/foreign-filer 20-F), say so once and reason from price/liquidity/positioning only.'),
       () => analyst(dir, ticker, kind, 'Technical analyst', '20-analyst-tech.md',
         'Mission: read trend, momentum, volatility from P2 (SMA/RSI/MACD/ATR/sigma) + P1. State where price sits vs SMA50/200 in ATR14 multiples. Every level/move in ATR14 units before any escalation word.'),
-      () => analyst(dir, ticker, kind, 'Sentiment analyst', '20-analyst-sent.md',
-        'Mission: summarize the tape from P5 (dated headlines) + P6 (sentiment tone). Separate durable narrative from noise; weight recency; quote headline dates from P5. If P6 is DATA GAP, say so; do not infer sentiment from price. If you have a WebSearch tool, you MAY add the next earnings date and 1-2 recent catalysts citing the URL on the same line, LABELED "(discovery, not point-in-time)"; if not, mark next-earnings DATA GAP.'),
+      () => analyst(dir, ticker, kind, 'Sentiment analyst', '20-analyst-sent.md', sentimentMission),
     ])
     // Stage 3 — debate, 2 waves
     await parallel([
@@ -92,8 +159,14 @@ async function runTicker(it) {
         }, required: ['decision', 'spread', 'n_valid'],
       }, label: `tally:${ticker}` })
     // Stage 6 — writer (opus: schema-v2 decision levels + concrete position)
+    const writerReadList = isReplay
+      ? `10-datapack.md, 10-datapack.json, 20-analyst-fund.md, 20-analyst-tech.md, 20-analyst-sent.md, the four 30-debate-*.md, 40-risk.md, 55-rating-block.md, ${dir}/00-scope.json`
+      : `10-datapack.md, 10-datapack.json, 20-analyst-fund.md, 20-analyst-tech.md, 20-analyst-sent.md, the four 30-debate-*.md, 40-risk.md, 55-rating-block.md, 15-position.json`
+    const replayBanner = isReplay
+      ? `\n\nHISTORICAL REPLAY BANNER — as the VERY FIRST lines of the report, before the executive summary, state plainly that this is a **Historical replay** and give all four fields: requested cutoff (${it.requested_cutoff}), effective market as-of (${it.effective_market_asof}), entry market as-of (${it.entry_market_asof}), generated_at (${scope.generatedAt}). Do NOT reference or read 15-position.json anywhere — it does not exist for a replay run. Do NOT include a "## Your position" section.`
+      : ''
     await agent(
-      `ROLE: Institutional report writer for ${ticker} (${kind}). Write ${dir}/60-report.md using the schema-v2 decision-level spec. Read the template ${SK}/references/report-template.md and ALL run artifacts in ${dir}/: 10-datapack.md, 10-datapack.json, 20-analyst-fund.md, 20-analyst-tech.md, 20-analyst-sent.md, the four 30-debate-*.md, 40-risk.md, 55-rating-block.md, 15-position.json.
+      `ROLE: Institutional report writer for ${ticker} (${kind}). Write ${dir}/60-report.md using the schema-v2 decision-level spec. Read the template ${SK}/references/report-template.md and ALL run artifacts in ${dir}/: ${writerReadList}.${replayBanner}
 
 RULES (grounding):
 - Insert ${dir}/55-rating-block.md VERBATIM into the rating slot — the headline rating comes ONLY from it; do not edit a character.
@@ -113,16 +186,17 @@ NEW in schema-v2 — do these:
    {"schema":2,"spot":<price>,"triggers":[{"side":"downside","level":<price>,"intended_action":"<Sell|Exit|Trim|Stop trimming / re-rate>","basis":"<cited basis + qualifier>","comparison":"<intraday_below|close_below>","action_strength":"<review|act>","rating_gate":"<none|hold_requires_review>","conditions":[]},{"side":"upside","level":<price>,"intended_action":"<Buy|Add|Stop trimming / re-rate>","basis":"<cited basis + qualifier>","comparison":"<intraday_above|close_above>","action_strength":"<review|act>","rating_gate":"<none|hold_requires_review>","conditions":[]}]}
    \`\`\`
    For Hold, set directional add/trim/exit triggers to action_strength="review" and rating_gate="hold_requires_review".
-4. CONCRETE "## Your position" (only if 15-position.json H1.held=true; else omit). Position-blind, FINAL rating (invariant 15) — the position never argues it. State weight [H1.pct_of_book], shares [H1.shares], value, open P/L [H1.unrealized_pl_pct]. Then:
-   - SIZE band tied to rating: Sell → "trim ~25–40% (≈\$X–Y off)" (\$ from [H1.market_value]); Hold → "hold current size — add only above the upside trigger, exit below the downside"; Buy → "add ~X%".
-   - TWO-SIDED PLAN in \$: "▼ below <downside \$> → <sell/exit/trim>; ▲ above <upside \$> → <add/buy>", each with % from spot and ATR distance.
-   - TAX flag from open-P/L sign: gain → "trimming realizes a taxable gain"; loss → "loss is tax-harvestable — mind the 30-day wash-sale window if you'd rebuy".
-   - BOOK FIT: weight vs book + concentration note (>5% single-name, or sector-cluster membership).
+4. ${isReplay
+        ? 'This is a HISTORICAL REPLAY run: omit the "## Your position" section entirely. Do not reference, read, or infer 15-position.json — it was never generated for this run.'
+        : 'CONCRETE "## Your position" (only if 15-position.json H1.held=true; else omit). Position-blind, FINAL rating (invariant 15) — the position never argues it. State weight [H1.pct_of_book], shares [H1.shares], value, open P/L [H1.unrealized_pl_pct]. Then:\n   - SIZE band tied to rating: Sell → "trim ~25–40% (≈\\$X–Y off)" (\\$ from [H1.market_value]); Hold → "hold current size — add only above the upside trigger, exit below the downside"; Buy → "add ~X%".\n   - TWO-SIDED PLAN in \\$: "▼ below <downside \\$> → <sell/exit/trim>; ▲ above <upside \\$> → <add/buy>", each with % from spot and ATR distance.\n   - TAX flag from open-P/L sign: gain → "trimming realizes a taxable gain"; loss → "loss is tax-harvestable — mind the 30-day wash-sale window if you\'d rebuy".\n   - BOOK FIT: weight vs book + concentration note (>5% single-name, or sector-cluster membership).'}
 5. Disclosure footer: Actual N from the rating block; agents ~16 (3 sonnet analysts + 4 sonnet debaters + 1 sonnet risk + 5 opus judges + 1 opus writer); models sonnet(analysts/debate/risk)+opus(judges/writer); wall/cost "batch-level"; "Not financial advice."\nWrite the finished report to ${dir}/60-report.md. Return the executive-summary paragraph only.`,
       { phase: 'Writer', model: 'opus', effort: 'high', label: `writer:${ticker}` })
     // Stage 7 — QA cite-check + prose pass, one fix if hard-fail
+    const qaCmd = isReplay
+      ? `python3 ${SK}/scripts/qa_check.py --replay --asof-cutoff ${it.requested_cutoff} ${dir}/60-report.md ${dir}/10-datapack.json`
+      : `python3 ${SK}/scripts/qa_check.py ${dir}/60-report.md ${dir}/10-datapack.json ${dir}/15-position.json`
     let qa = await agent(
-      `Run the cite-check: python3 ${SK}/scripts/qa_check.py ${dir}/60-report.md ${dir}/10-datapack.json ${dir}/15-position.json  (exit 0 clean, 1 on tagged mismatch). Capture its full output.\nThen do a PROSE pass: Read ${dir}/60-report.md and flag untagged numeric claims, paraphrase drift, escalation words used before an ATR14-normalized move, or an altered rating block. You verify prose, not arithmetic; do not rewrite.\nReturn JSON.`,
+      `Run the cite-check: ${qaCmd}  (exit 0 clean, 1 on tagged mismatch). Capture its full output.\nThen do a PROSE pass: Read ${dir}/60-report.md and flag untagged numeric claims, paraphrase drift, escalation words used before an ATR14-normalized move, or an altered rating block. You verify prose, not arithmetic; do not rewrite.\nReturn JSON.`,
       { phase: 'QA', model: 'sonnet', effort: 'medium', schema: {
         type: 'object', additionalProperties: true,
         properties: {
@@ -132,11 +206,12 @@ NEW in schema-v2 — do these:
         }, required: ['cite_exit', 'hard_fails', 'prose_exceptions'],
       }, label: `qa:${ticker}` })
     if (qa && ((qa.cite_exit && qa.cite_exit !== 0) || (qa.hard_fails && qa.hard_fails.length))) {
+      const fixReadList = isReplay ? `${dir}/60-report.md and ${dir}/10-datapack.json` : `${dir}/60-report.md and ${dir}/10-datapack.json and ${dir}/15-position.json`
       await agent(
-        `The report ${dir}/60-report.md failed QA. Cite-check hard failures: ${JSON.stringify(qa.hard_fails || [])}. Prose exceptions: ${JSON.stringify(qa.prose_exceptions || [])}.\nRead ${dir}/60-report.md and ${dir}/10-datapack.json and ${dir}/15-position.json. Fix ONLY the flagged issues: correct each tagged number to match the pack value (0.5% tol), tag or remove untagged numbers in judgment sections, and NEVER touch the verbatim rating block. Re-Write the corrected report to ${dir}/60-report.md. Return "fixed".`,
+        `The report ${dir}/60-report.md failed QA. Cite-check hard failures: ${JSON.stringify(qa.hard_fails || [])}. Prose exceptions: ${JSON.stringify(qa.prose_exceptions || [])}.\nRead ${fixReadList}. Fix ONLY the flagged issues: correct each tagged number to match the pack value (0.5% tol), tag or remove untagged numbers in judgment sections, and NEVER touch the verbatim rating block.${isReplay ? ' Do NOT reference or read 15-position.json — this is a historical replay run.' : ''} Re-Write the corrected report to ${dir}/60-report.md. Return "fixed".`,
         { phase: 'QA', model: 'opus', effort: 'high', label: `qafix:${ticker}` })
       qa = await agent(
-        `Re-run: python3 ${SK}/scripts/qa_check.py ${dir}/60-report.md ${dir}/10-datapack.json ${dir}/15-position.json and return JSON of the result.`,
+        `Re-run: ${qaCmd} and return JSON of the result.`,
         { phase: 'QA', model: 'sonnet', effort: 'low', schema: {
           type: 'object', additionalProperties: true,
           properties: { cite_exit: { type: 'number' }, hard_fails: { type: 'array', items: { type: 'string' } } },

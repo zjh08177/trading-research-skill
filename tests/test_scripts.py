@@ -22,8 +22,9 @@ def _votes(tmp, specs):
             p.write_text(spec + "\n")
         else:
             r, c = spec
-            p.write_text(f"analysis line\nVERDICT: {r} | CONVICTION: {c} "
-                         f"| WHY: reason {i} in one sentence.\n")
+            p.write_text(f"analysis line\nVERDICT: {r} | CONVICTION: {c} | "
+                         f"ENTRY-PATH: n/a - trend setup | WHY: reason {i} "
+                         f"in one sentence.\n")
     return tmp
 
 
@@ -111,6 +112,51 @@ def test_unanimous_all_aggregates_equal_mode(tmp_path):
     assert "mode Buy" in ct and "median Buy" in ct
 
 
+def _votes_v2(tmp, specs):
+    """specs: list of (rating, conviction, entry_path) or a raw malformed string."""
+    for i, spec in enumerate(specs, 1):
+        p = tmp / f"vote-{i}.md"
+        if isinstance(spec, str):
+            p.write_text(spec + "\n")
+        else:
+            r, c, ep = spec
+            p.write_text(
+                f"analysis line\nVERDICT: {r} | CONVICTION: {c} | "
+                f"ENTRY-PATH: {ep} | WHY: reason {i} in one sentence.\n")
+    return tmp
+
+
+def test_parse_vote_reads_entry_path(tmp_path):
+    _votes_v2(tmp_path, [("Hold", 6, "left-side pending (2/4 conditions met)")])
+    parsed = ensemble.parse_vote(tmp_path / "vote-1.md")
+    assert parsed is not None
+    notch, conv, entry_path, why, verbatim, model = parsed
+    assert entry_path == "left-side pending (2/4 conditions met)"
+    assert notch == 3 and conv == 6
+
+
+def test_parse_vote_missing_entry_path_is_malformed(tmp_path):
+    # A 3-field legacy-shaped line (no ENTRY-PATH) must be treated as
+    # malformed, never silently accepted as a degraded 3-field vote.
+    p = tmp_path / "vote-1.md"
+    p.write_text("VERDICT: Hold | CONVICTION: 6 | WHY: legacy shape, no entry path.\n")
+    assert ensemble.parse_vote(p) is None
+
+
+def test_render_lists_entry_path_per_vote(tmp_path):
+    _votes_v2(tmp_path, [
+        ("Hold", 6, "left-side pending (2/4 conditions met)"),
+        ("Hold", 5, "n/a - trend setup"),
+        ("Hold", 7, "right-side confirmed"),
+    ])
+    votes, malformed = ensemble.collect(tmp_path)
+    assert not malformed
+    block, decision = ensemble.render(votes, malformed, 3)
+    assert "left-side pending (2/4 conditions met)" in block
+    assert "n/a - trend setup" in block
+    assert "right-side confirmed" in block
+
+
 # ---------- ledger ----------
 
 def test_read_before_excludes_same_day(tmp_path):
@@ -159,6 +205,33 @@ def test_append_missing_key_exits_2(tmp_path):
     r = _run("ledger.py", "--ledger", str(led), "append", "--row",
              json.dumps({"run_id": "x"}))
     assert r.returncode == 2 and "missing keys" in r.stderr
+
+
+def test_append_null_required_value_exits_2(tmp_path):
+    """Key PRESENCE is not enough: a run whose ensemble never finished emits
+    mode_rating/spread as null, and that row must not enter the track record."""
+    led = tmp_path / "ledger.jsonl"
+    row = {"run_id": "r10", "ticker": "NVDA", "date_utc": "2026-06-01",
+           "as_of": "2026-06-01T20:00:00Z", "job": "J1", "mode_rating": None,
+           "distribution": {}, "spread": None, "no_call": False,
+           "gaps": [], "report_path": "nvda.md", "cost_usd": 5.1, "wall_s": 700}
+    r = _run("ledger.py", "--ledger", str(led), "append", "--row", json.dumps(row))
+    assert r.returncode == 2
+    assert "null required keys" in r.stderr
+    assert "mode_rating" in r.stderr and "spread" in r.stderr
+    assert not led.exists()                       # nothing was written
+
+
+def test_append_falsy_but_present_values_are_accepted(tmp_path):
+    """`0`, `false` and `[]` are values, not holes — the null guard must not
+    turn a legitimate zero-spread unanimous row into a rejection."""
+    led = tmp_path / "ledger.jsonl"
+    row = {"run_id": "r11", "ticker": "NVDA", "date_utc": "2026-06-01",
+           "as_of": "2026-06-01T20:00:00Z", "job": "J1", "mode_rating": "Buy",
+           "distribution": {"Buy": 3}, "spread": 0, "no_call": False,
+           "gaps": [], "report_path": "nvda.md", "cost_usd": 0, "wall_s": 0}
+    r = _run("ledger.py", "--ledger", str(led), "append", "--row", json.dumps(row))
+    assert r.returncode == 0 and "appended: r11" in r.stdout
 
 
 def test_append_write_failure_prints_row_exits_2(tmp_path):
@@ -309,6 +382,175 @@ def test_resolve_cli_no_aged_rows_is_clean(tmp_path):
              "--asof", "2026-07-05")
     assert r.returncode == 0 and "0 resolved" in r.stdout
     assert not (tmp_path / "ledger-resolved.jsonl").exists()  # nothing written
+
+
+# ---------- ledger: historical as-of replay lane ----------
+
+def _replay_row(run_id, **over):
+    row = {"run_id": run_id, "ticker": "AAOI", "generated_at": "2026-06-01T12:00:00Z",
+           "requested_cutoff": "2026-06-01T20:00:00Z",
+           "effective_market_asof": "2026-06-01", "entry_market_asof": "2026-06-01",
+           "job": "J1", "mode_rating": "Buy", "distribution": {"Buy": 3},
+           "spread": 0, "no_call": False, "gaps": [],
+           "judge_mix": ["opus", "opus", "opus"], "report_path": "aaoi.md",
+           "cost_usd": 5.1, "wall_s": 700, "evidence_type": "replay"}
+    row.update(over)
+    return row
+
+
+def test_replay_path_helpers():
+    import ledger
+    main = Path("/tmp/x/ledger.jsonl")
+    assert ledger.replay_path(main) == Path("/tmp/x/ledger-replay.jsonl")
+    assert ledger.replay_resolved_path(main) == Path("/tmp/x/ledger-replay-resolved.jsonl")
+    row = {"run_id": "r1", "horizon_td": 5, "benchmark": "SPY", "evidence_type": "replay"}
+    assert ledger.resolved_key(row) == ("r1", 5, "SPY", "replay")
+
+
+def test_replay_append_writes_replay_ledger_leaves_live_unchanged(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    led.write_text(json.dumps({"run_id": "live1", "ticker": "AAOI",
+                               "date_utc": "2026-05-01", "as_of": "2026-05-01T20:00:00Z",
+                               "job": "J0", "mode_rating": "Hold", "distribution": {},
+                               "spread": 0, "no_call": False, "gaps": [],
+                               "report_path": "x.md", "cost_usd": 1.0, "wall_s": 10}) + "\n")
+    before = led.read_text()
+    row = _replay_row("rep1")
+    r = _run("ledger.py", "--ledger", str(led), "append", "--replay",
+             "--row", json.dumps(row))
+    assert r.returncode == 0 and "appended: rep1" in r.stdout
+    assert led.read_text() == before                        # live ledger byte-identical
+    rpath = tmp_path / "ledger-replay.jsonl"
+    assert rpath.exists()
+    assert json.loads(rpath.read_text().strip()) == row
+
+
+def test_replay_append_duplicate_identical_run_id_is_noop(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    row = _replay_row("rep2")
+    r1 = _run("ledger.py", "--ledger", str(led), "append", "--replay",
+              "--row", json.dumps(row))
+    r2 = _run("ledger.py", "--ledger", str(led), "append", "--replay",
+              "--row", json.dumps(row))
+    assert r1.returncode == 0 and r2.returncode == 0
+    lines = (tmp_path / "ledger-replay.jsonl").read_text().splitlines()
+    assert len(lines) == 1                     # identical repeat is a no-op, not a dup line
+
+
+def test_replay_append_conflicting_duplicate_run_id_fails(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    row = _replay_row("rep3")
+    r1 = _run("ledger.py", "--ledger", str(led), "append", "--replay",
+              "--row", json.dumps(row))
+    row2 = _replay_row("rep3", mode_rating="Sell")
+    r2 = _run("ledger.py", "--ledger", str(led), "append", "--replay",
+              "--row", json.dumps(row2))
+    assert r1.returncode == 0
+    assert r2.returncode == 2 and "already exists" in r2.stderr
+    lines = (tmp_path / "ledger-replay.jsonl").read_text().splitlines()
+    assert len(lines) == 1                     # rejected write never landed
+
+
+def test_replay_append_rejects_non_replay_evidence_type(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    row = _replay_row("rep4", evidence_type="live")
+    r = _run("ledger.py", "--ledger", str(led), "append", "--replay",
+             "--row", json.dumps(row))
+    assert r.returncode == 2 and "evidence_type" in r.stderr
+    assert not (tmp_path / "ledger-replay.jsonl").exists()
+
+
+def test_replay_append_missing_key_exits_2(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    r = _run("ledger.py", "--ledger", str(led), "append", "--replay",
+             "--row", json.dumps({"run_id": "x", "evidence_type": "replay"}))
+    assert r.returncode == 2 and "missing keys" in r.stderr
+
+
+def test_read_ignores_replay_ledger(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    led.write_text(json.dumps({"run_id": "live1", "ticker": "AAOI",
+                               "date_utc": "2026-05-01", "mode_rating": "Hold",
+                               "spread": 0, "no_call": False, "report_path": "x.md"}) + "\n")
+    rpath = tmp_path / "ledger-replay.jsonl"
+    rpath.write_text(json.dumps(_replay_row("rep5", entry_market_asof="2026-05-15")) + "\n")
+    r = _run("ledger.py", "--ledger", str(led), "read", "--ticker", "AAOI",
+             "--before", "2026-07-01")
+    assert r.returncode == 0
+    assert "2026-05-01" in r.stdout
+    assert "rep5" not in r.stdout and "2026-05-15" not in r.stdout
+
+
+def test_resolve_replay_rows_multi_horizon_coexist():
+    """1td and 5td resolved rows for the same run_id coexist via resolved_key,
+    and a horizon already present is skipped on a re-run."""
+    import ledger
+    from datetime import date
+    prices = {
+        ("AAOI", "2026-06-01"): (100.0, "2026-06-01"),
+        ("AAOI", "2026-06-02"): (102.0, "2026-06-02"),
+        ("AAOI", "2026-06-08"): (110.0, "2026-06-08"),
+        ("SPY", "2026-06-01"): (100.0, "2026-06-01"),
+        ("SPY", "2026-06-02"): (100.5, "2026-06-02"),
+        ("SPY", "2026-06-08"): (105.0, "2026-06-08"),
+    }
+    pf = lambda s, d: prices.get((s, d))
+    row = _replay_row("multi1")
+    out1, sk1 = ledger.resolve_replay_rows([row], set(), "AAOI", 1, "SPY",
+                                           date(2026, 7, 1), pf)
+    out5, sk5 = ledger.resolve_replay_rows([row], set(), "AAOI", 5, "SPY",
+                                           date(2026, 7, 1), pf)
+    assert len(out1) == 1 and sk1 == 0 and out1[0]["horizon_td"] == 1
+    assert len(out5) == 1 and sk5 == 0 and out5[0]["horizon_td"] == 5
+    assert out1[0]["resolution_date"] == "2026-06-02"
+    assert out5[0]["resolution_date"] == "2026-06-08"
+    resolved_keys = {ledger.resolved_key(out1[0]), ledger.resolved_key(out5[0])}
+    out1_again, _ = ledger.resolve_replay_rows([row], resolved_keys, "AAOI", 1, "SPY",
+                                                date(2026, 7, 1), pf)
+    assert out1_again == []                    # already-resolved horizon is skipped
+
+
+def test_resolve_replay_rows_skips_stale_entry_bar():
+    """price_fn returning a bar_date that != the requested entry date (e.g. a
+    holiday landing on the last settled prior close) is a hard skip."""
+    import ledger
+    from datetime import date
+
+    def pf(sym, d):
+        if d == "2026-06-01":
+            return (100.0, "2026-05-29")       # stale prior close, not the requested date
+        return (105.0, d)
+
+    row = _replay_row("stale1")
+    out, skipped = ledger.resolve_replay_rows([row], set(), "AAOI", 5, "SPY",
+                                              date(2026, 7, 1), pf)
+    assert out == [] and skipped == 1
+
+
+def test_resolve_replay_rows_skips_stale_benchmark_bar():
+    """Same guard on the benchmark leg: a stale SPY bar must not be substituted."""
+    import ledger
+    from datetime import date
+
+    def pf(sym, d):
+        if sym == "SPY" and d == "2026-06-08":
+            return (105.0, "2026-06-05")       # stale benchmark exit bar
+        return (110.0, d)
+
+    row = _replay_row("stale2")
+    out, skipped = ledger.resolve_replay_rows([row], set(), "AAOI", 5, "SPY",
+                                              date(2026, 7, 1), pf)
+    assert out == [] and skipped == 1
+
+
+def test_resolve_replay_cli_no_aged_rows_is_clean(tmp_path):
+    led = tmp_path / "ledger.jsonl"
+    rpath = tmp_path / "ledger-replay.jsonl"
+    rpath.write_text(json.dumps(_replay_row("repclean", entry_market_asof="2026-07-08")) + "\n")
+    r = _run("ledger.py", "--ledger", str(led), "resolve", "--replay",
+             "--ticker", "AAOI", "--asof", "2026-07-10")
+    assert r.returncode == 0 and "0 resolved" in r.stdout
+    assert not (tmp_path / "ledger-replay-resolved.jsonl").exists()
 
 
 # ---------- qa_check ----------

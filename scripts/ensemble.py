@@ -14,7 +14,7 @@ NOTCH = {"StrongSell": 1, "Sell": 2, "Hold": 3, "Buy": 4, "StrongBuy": 5}
 LABEL = {v: k for k, v in NOTCH.items()}
 VERDICT_RE = re.compile(
     r"VERDICT:\s*(StrongSell|Sell|Hold|Buy|StrongBuy)\s*\|\s*"
-    r"CONVICTION:\s*(\d+)\s*\|\s*WHY:\s*(.+?)\s*$")
+    r"CONVICTION:\s*(\d+)\s*\|\s*ENTRY-PATH:\s*(.+?)\s*\|\s*WHY:\s*(.+?)\s*$")
 HEADER_RE = re.compile(r"(BACKEND|MODEL|SLOT):\s*(.*)$")
 DEFAULT_MODEL = "claude/opus"
 
@@ -35,9 +35,11 @@ def parse_headers(lines):
 
 
 def parse_vote(path):
-    """Return (notch, conviction, why, verbatim_line, model) or None if malformed.
-    Leading header lines are consumed first; a header-only file (no VERDICT body)
-    is malformed."""
+    """Return (notch, conviction, entry_path, why, verbatim_line, model) or
+    None if malformed. Leading header lines are consumed first; a header-only
+    file (no VERDICT body) is malformed. A vote missing the ENTRY-PATH field
+    (e.g. a stale 3-field vote) is malformed — it never silently degrades to
+    a 3-field parse."""
     lines = [ln.rstrip() for ln in path.read_text().splitlines() if ln.strip()]
     if not lines:
         return None
@@ -50,7 +52,8 @@ def parse_vote(path):
     conv = int(m.group(2))
     if not 1 <= conv <= 10:
         return None
-    return (NOTCH[m.group(1)], conv, m.group(3).strip(), body[-1].strip(), model)
+    return (NOTCH[m.group(1)], conv, m.group(3).strip(), m.group(4).strip(),
+            body[-1].strip(), model)
 
 
 def collect(votes_dir):
@@ -81,7 +84,7 @@ def mode_notch(notches):
 
 def render(votes, malformed, n_target):
     n_valid = len(votes)
-    judge_mix = [v[4] for v in votes]
+    judge_mix = [v[5] for v in votes]
     counts = Counter(v[0] for v in votes)
     spread = (max(counts) - min(counts)) if votes else 0
     decision = decide(spread, n_valid, n_target)
@@ -112,12 +115,14 @@ def render(votes, malformed, n_target):
     out += ["", f"Spread: {spread} notch(es) · Mean conviction: "
             f"{mean_conv}/10 · Decision: {decision}", "",
             "**Verdicts (verbatim):**"]
-    out += [f"- {v[3]}" for v in votes]
+    out += [f"- {v[4]}" for v in votes]
+    out += ["", "**Entry paths:**"]
+    out += [f"- {LABEL[v[0]]} (conviction {v[1]}): {v[2]}" for v in votes]
     if votes:
         bull = max(votes, key=lambda v: (v[0], v[1]))
         bear = min(votes, key=lambda v: (v[0], -v[1]))
-        out += ["", f'**Most bullish:** "{bull[2]}"',
-                f'**Most bearish:** "{bear[2]}"']
+        out += ["", f'**Most bullish:** "{bull[3]}"',
+                f'**Most bearish:** "{bear[3]}"']
     if malformed:
         out += ["", f"_Excluded (malformed, {len(malformed)}): "
                 + ", ".join(malformed) + "._"]
