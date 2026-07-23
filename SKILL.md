@@ -140,7 +140,7 @@ in `10-datapack.md`. Flag any section past its staleness threshold as `STALE`.
 | P5 | ≤10 dated headlines + next earnings date | `vendors/marketaux_news.py` + WebSearch (earnings date); fallback stock-market-pro news | headline >14d dropped; event job >48h flagged |
 | P6 | sentiment (equity: news tone; crypto: LunarCrush) | LunarCrush MCP / derived | >1 day |
 | P7 | track record | `ledger.py read --ticker X --before <as_of>` | guard is code, not prose |
-| P8 | dealer GEX + gamma regime/flip, IV rank/skew/term, max pain, OI walls, live flow (`--options` only) | `vendors/uw_options.py` (Unusual Whales); suppresses P4 on success | per-fact daily/snapshot; live facts session-gated |
+| P8 | dealer GEX + gamma regime/flip, IV rank/skew/term, max pain, OI walls, live flow + scored smart-money flow (`--options` only) | `vendors/uw_options.py` (Unusual Whales); suppresses P4 on success | per-fact daily/snapshot; live facts session-gated |
 
 Vendor CLIs: run `<SKILL_DIR>/.venv/bin/python scripts/vendors/<cli>.py --ticker X --asof <date>`
 (SKILL_DIR = this skill's repo root; bootstrap the venv once with `scripts/setup_venv.sh`).
@@ -239,6 +239,10 @@ standing options source until a run opts in.
    `render_options` echoes it in the block. On P8 success **skip
    `schwab_options`** — P4 is suppressed; emit the Schwab IV only on a NAMED P8
    gap, stamped `src=schwab` (D2/EC4).
+   The flow-alerts fetch also emits `P8.smart_flow`: the top prints scored
+   against an institutional ruleset (premium tier, DTE window, vol/OI,
+   ask-side, sweep, opening, repeated) as a context list — describes
+   positioning, never a strike/expiry to trade (O9/O10).
 2. **Stages 2–5**: agents receive P8 verbatim and may cite positioning; the
    emitted rating stays the equity Buy/Sell/Hold — options never change it.
 3. **Stage 6a**: the orchestrator runs `render_options.py 10-datapack.json >
@@ -276,6 +280,7 @@ Options invariants (enforce alongside 1–17):
 | O7 | Below a per-group data floor (min OI, ≥2 expiries, IV-rank present) the group emits `DATA-THIN(group)` — never a computed regime/rank on a degenerate payload. |
 | O8 | Every `live` fact carries a session-state; cumulative intraday metrics gate to STALE/DATA-THIN when the session is incomplete or absent. |
 | O9 | Output describes positioning and levels; it NEVER names a strike or expiry to buy or sell. |
+| O10 | `P8.smart_flow` is a deterministic score over the flow-alerts tape (premium/DTE/vol-OI/ask-side/sweep/opening/repeated); it drops prints below the $300k premium floor, is a context list (never number-tagged, O3), stamps `snapshot`, and never changes the rating (it informs positioning only, like all P8). |
 
 ## Ensemble tally
 
