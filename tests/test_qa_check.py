@@ -289,3 +289,96 @@ def test_main_passes_check_footer_after_patch(tmp_path):
     pack.write_text("{}")
     code = qa.main([str(report), str(pack), "--check-footer"])
     assert code == 0
+
+
+# --- Fix 2: per-cue attribution + QA-exceptions blanking (Q1-Q11) ----------
+
+def _btsg_pack():
+    def f(v, unit="USD"):
+        return {"v": v, "unit": unit, "asof": "2026-07-22", "src": "test"}
+    return {"P3.pe_ttm": f(58.12), "P3.net_debt": f(1609034000),
+            "P2.rsi14": f(56.369, "index"), "P6.social_risk": f("none", "label"),
+            "P2.atr14": f(34.47)}
+
+
+def _gaphall(line):
+    return qa.check_data_gap_hallucination(line, _btsg_pack())
+
+
+def test_Q1_table_cell_scoped_gap_no_bystander():
+    line = "| P/E (TTM) | 58.12 [P3.pe_ttm] | DATA GAP: peer/history | [P3.pe_ttm] |"
+    assert _gaphall(line) == []
+
+
+def test_Q2_scoped_object_ids_absent_from_pack():
+    line = ("RSI is 56.369 [P2.rsi14], but DATA GAP: P9.rsi_percentile_note and "
+            "P9.rsi_percentile_conditional_n; no_edge cannot be confirmed")
+    assert _gaphall(line) == []
+
+
+def test_Q3_prose_object_present_subject_not_flagged():
+    line = "the derived social-risk label is none [P6.social_risk]. DATA GAP: P6 news_tone."
+    assert _gaphall(line) == []
+
+
+def test_Q4_bare_stage_object():
+    line = "net debt 1609034000 [P3.net_debt], and missing P9 argue against chasing."
+    assert _gaphall(line) == []
+
+
+def test_Q5_full_btsg_line_26():
+    line = ("ENTRY-PATH: DATA GAP: [P9.exhaustion_tally]; n/a - trend-only setup | "
+            "WHY: ... net debt 1609034000 [P3.net_debt], and missing P9 argue "
+            "against chasing.")
+    assert _gaphall(line) == []
+
+
+def test_Q6_disguised_present_object_fails():
+    results = _gaphall("DATA GAP: P3.net_debt")
+    assert len(results) == 1
+    assert results[0][0] is False
+    assert "P3.net_debt" in results[0][1]
+
+
+def test_Q7_subject_form_legacy_path_fails():
+    results = _gaphall("P3.net_debt is MISSING from the filings.")
+    assert len(results) == 1
+    assert results[0][0] is False
+    assert "P3.net_debt" in results[0][1]
+
+
+def test_Q8_direct_fact_object_present_fails():
+    results = _gaphall("MISSING [P2.atr14] from the pack.")
+    assert len(results) == 1
+    assert results[0][0] is False
+    assert "P2.atr14" in results[0][1]
+
+
+def test_Q9_sentinel_none_is_present():
+    results = _gaphall("DATA GAP: [P6.social_risk] classifier never ran.")
+    assert len(results) == 1
+    assert results[0][0] is False
+    assert "P6.social_risk" in results[0][1]
+
+
+def test_Q10_qa_exceptions_section_blanked_numbering_preserved():
+    report = (
+        "# T\n"
+        "## QA exceptions\n"
+        " - `! FAIL data-gap-hallucination line 8: claims P6.social_risk is a "
+        "DATA GAP/MISSING but the pack has v='none' for it`\n"
+        "## Next\n"
+        "P3.net_debt is MISSING here.")
+    results = qa.check_data_gap_hallucination(report, _btsg_pack())
+    assert len(results) == 1
+    assert "line 5" in results[0][1]
+    assert "P3.net_debt" in results[0][1]
+
+
+def test_Q11_preexisting_gap_tests_still_pass():
+    # Hand-verification that the four pre-existing gap tests keep their contract
+    # under the new attribution rule (they also run standalone above).
+    test_data_gap_hallucination_catches_present_fact()
+    test_data_gap_hallucination_allows_real_gap()
+    test_data_gap_hallucination_ignores_distant_unrelated_tag()
+    test_data_gap_hallucination_dedupes_multiple_cues_same_fact()

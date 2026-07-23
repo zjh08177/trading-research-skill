@@ -200,19 +200,66 @@ BARE_FACT_RE = re.compile(r"\b([PH]\d+\.[A-Za-z0-9_]+)\b")
 GAP_PROXIMITY_CHARS = 40  # tight window: catches "DATA GAP: X [tag]" / "[tag] is MISSING",
 # not an unrelated tag mentioned later in the same long analyst paragraph
 
+# Scoped-object grammar after a gap cue. A cue with an EXPLICIT object scopes
+# the gap to that object; only then is proximity attribution suppressed.
+_OBJ_COLON_RE = re.compile(r"^\s*:\s*")                              # "DATA GAP: <object>"
+_OBJ_FACT_RE = re.compile(r"^\s*[\(\[]?\s*([PH]\d+\.[A-Za-z0-9_]+)")  # "MISSING [P2.atr14]"
+_OBJ_STAGE_RE = re.compile(r"^\s*[\(\[]?\s*([PH]\d+)\b(?!\.)")        # "missing P9"
+_OBJ_END_RE = re.compile(r"[|;]|\.(?=\s|$)")   # object ends at cell/clause/sentence
+_OBJ_SPAN = 100                                 # hard cap on object length
+QA_EXCEPTIONS_HEAD_RE = re.compile(r"^##\s+QA exceptions\s*$", re.M | re.I)
+
+
+def _blank_qa_exceptions(text):
+    """Blank (never delete) the driver-written '## QA exceptions' section before
+    the gap scan. pipeline_driver._insert_qa_exceptions quotes failing QA lines
+    VERBATIM into the report, so the final-pass scan would re-flag the detector's
+    own messages (BTSG 60-report.md lines 168-176) — pure self-reference; every
+    quoted failure was already surfaced and disclosed by the pre-footer pass.
+    Lines are replaced with empty lines, so downstream line numbers stay true."""
+    m = QA_EXCEPTIONS_HEAD_RE.search(text)
+    if not m:
+        return text
+    end = text.find("\n## ", m.end())
+    end = len(text) if end == -1 else end
+    section = text[m.start():end]
+    return text[:m.start()] + "\n" * section.count("\n") + text[end:]
+
 
 def check_data_gap_hallucination(text, pack):
     """A "DATA GAP"/MISSING/"not available" cue with a [P#.fact] (or bare
     P#.fact) tag in close proximity (same clause, not just same paragraph)
     whose value IS present (non-null) in the pack is a hallucination — the
     analyst declared a gap for a fact it was actually handed. Returns list
-    of (ok, message); only FAILs are appended (no PASS noise)."""
+    of (ok, message); only FAILs are appended (no PASS noise).
+
+    A cue carrying an EXPLICIT object — "DATA GAP: <object>", "MISSING [P2.x]",
+    "missing P9" — is scoped to that object: fact ids NAMED IN the object are
+    still verified against the pack (a disguised "DATA GAP: P3.net_debt" with
+    net_debt present still fails), but present facts merely NEARBY on the line
+    are no longer blamed for someone else's gap. Cues with no explicit object
+    keep the original ±GAP_PROXIMITY_CHARS attribution unchanged."""
+    text = _blank_qa_exceptions(text)
     results = []
     for lineno, line in enumerate(text.splitlines(), 1):
         flagged = set()
         for cue in GAP_CUE_RE.finditer(line):
-            lo = max(0, cue.start() - GAP_PROXIMITY_CHARS)
-            hi = min(len(line), cue.end() + GAP_PROXIMITY_CHARS)
+            after = line[cue.end():]
+            m = _OBJ_COLON_RE.match(after)
+            if m:
+                span = after[m.end():m.end() + _OBJ_SPAN]
+                cut = _OBJ_END_RE.search(span)
+                obj = span[:cut.start()] if cut else span
+                flagged.update(BARE_FACT_RE.findall(obj))   # disguise guard
+                continue                                     # scoped: no bystanders
+            m = _OBJ_FACT_RE.match(after)
+            if m:
+                flagged.add(m.group(1))                      # the object IS the subject
+                continue
+            if _OBJ_STAGE_RE.match(after):
+                continue    # stage-level remark ("missing P9") — not a fact claim
+            lo = max(0, cue.start() - GAP_PROXIMITY_CHARS)   # legacy subject-form path,
+            hi = min(len(line), cue.end() + GAP_PROXIMITY_CHARS)  # byte-identical
             flagged.update(BARE_FACT_RE.findall(line[lo:hi]))
         for fact_id in sorted(flagged):
             fact = pack.get(fact_id)
