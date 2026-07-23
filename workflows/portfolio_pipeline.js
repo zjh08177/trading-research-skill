@@ -2,7 +2,7 @@ export const meta = {
   name: 'portfolio-top10-v2',
   description: 'trading-research pipeline (analysts→debate→risk→N=5 opus ensemble→schema-v2 writer→QA) over an arbitrary holdings list',
   phases: [
-    { title: 'Analysts', detail: '3 sonnet analysts per ticker' },
+    { title: 'Analysts', detail: '4 sonnet analysts per ticker (incl. mean-reversion)' },
     { title: 'Debate', detail: 'bull/bear, 2 waves, sonnet' },
     { title: 'Risk', detail: 'risk officer + judge bundle' },
     { title: 'Judges', detail: '5 opus judges, byte-identical bundle' },
@@ -103,7 +103,7 @@ const analyst = (dir, ticker, kind, role, file, mission) => agent(
   { phase: 'Analysts', model: 'sonnet', effort: 'medium', label: `${role.split(' ')[0].toLowerCase()}:${ticker}` })
 
 const debater = (dir, ticker, side, wave, file, extra) => agent(
-  `${HOUSE(dir)}\n\nROLE: ${side} advocate (debate wave ${wave}).\nFirst Read: ${dir}/20-analyst-fund.md, ${dir}/20-analyst-tech.md, ${dir}/20-analyst-sent.md${extra ? ', ' + extra : ''}.\nMission: build the strongest evidence-based ${side === 'Bull' ? 'LONG case — make it falsifiable, name the levels/dates that would confirm' : 'SHORT/AVOID case and steelman the downside — attack the opposing side\'s weakest tagged claims, name invalidation levels'}. Moves in ATR14 units; no price targets without a cited basis. Output <= 300 words. Then Write your case to ${dir}/${file}. Return your case text.`,
+  `${HOUSE(dir)}\n\nROLE: ${side} advocate (debate wave ${wave}).\nFirst Read: ${dir}/20-analyst-fund.md, ${dir}/20-analyst-tech.md, ${dir}/20-analyst-sent.md, ${dir}/20-analyst-meanrev.md${extra ? ', ' + extra : ''}.\nMission: build the strongest evidence-based ${side === 'Bull' ? 'LONG case — make it falsifiable, name the levels/dates that would confirm' : 'SHORT/AVOID case and steelman the downside — attack the opposing side\'s weakest tagged claims, name invalidation levels'}. Moves in ATR14 units; no price targets without a cited basis. Output <= 300 words. Then Write your case to ${dir}/${file}. Return your case text.`,
   { phase: 'Debate', model: 'sonnet', effort: 'medium', label: `${side.toLowerCase()}${wave}:${ticker}` })
 
 async function runTicker(it) {
@@ -124,6 +124,11 @@ async function runTicker(it) {
       () => analyst(dir, ticker, kind, 'Technical analyst', '20-analyst-tech.md',
         'Mission: read trend, momentum, volatility from P2 (SMA/RSI/MACD/ATR/sigma) + P1. State where price sits vs SMA50/200 in ATR14 multiples. Every level/move in ATR14 units before any escalation word.'),
       () => analyst(dir, ticker, kind, 'Sentiment analyst', '20-analyst-sent.md', sentimentMission),
+      // A5 (2026-07-18): SKILL.md specifies analysts x4 (fund/tech/sent/meanrev), but the
+      // batch path shipped only 3 -- so P9 had no owner and judges were asked to cite
+      // [P9.exhaustion_tally] with no brief interpreting it.
+      () => analyst(dir, ticker, kind, 'Mean-reversion analyst', '20-analyst-meanrev.md',
+        'Mission: judge whether this name is STRETCHED and whether a turn is actually confirming, from the P9 section. Lead with the stretch precondition: [P9.stretch_sma50_atr] / [P9.stretch_sma200_atr] in ATR multiples and [P9.stretch_sma50_sigma] in sigma. Then the turn evidence: cite [P9.exhaustion_tally] VERBATIM for the exhaustion count -- NEVER hand-count the four conditions ([P9.exhaustion_rsi_turn], [P9.exhaustion_vol_decay], [P9.exhaustion_higher_closes], [P9.exhaustion_crashfree_window]) and NEVER count ATR stretch as one of them; stretch is the PRECONDITION, not a condition. Report [P9.cluster_status]: when "clustered", a counter-trend entry is capped at PENDING, never confirmed -- a regime ends with a process, not one day. Give the forward-return base rate from [P9.base_rate_table] with its [P9.base_rate_n_raw]/[P9.base_rate_n_regimes]/[P9.base_rate_n_macro] sample sizes ALWAYS quoted alongside; if [P9.base_rate_ci_note] is present, quote its caveat rather than implying a calibrated probability. State plainly whether this is a left-side (counter-trend) or right-side (trend-following) setup and what would confirm it. If the P9 section says MISSING(P9) or a fact is absent, write DATA GAP for that item and NEVER cite a [P9.*] tag that is not in the pack.'),
     ])
     // Stage 3 — debate, 2 waves
     await parallel([
@@ -140,11 +145,11 @@ async function runTicker(it) {
       { phase: 'Risk', model: 'sonnet', effort: 'medium', label: `risk:${ticker}` })
     // Assemble byte-identical judge bundle + votes dir (mechanical)
     await agent(
-      `Run EXACTLY this bash command, then reply with just "ok":\nmkdir -p ${dir}/50-votes && { printf '# JUDGE BUNDLE — ${ticker}\\n'; for f in 10-datapack.md 20-analyst-fund.md 20-analyst-tech.md 20-analyst-sent.md 30-debate-w1-bull.md 30-debate-w1-bear.md 30-debate-w2-bull.md 30-debate-w2-bear.md 40-risk.md; do printf '\\n\\n===== %s =====\\n\\n' "$f"; cat "${dir}/$f" 2>/dev/null || printf '(missing %s)\\n' "$f"; done; } > ${dir}/45-judge-bundle.md`,
+      `Run EXACTLY this bash command, then reply with just "ok":\nmkdir -p ${dir}/50-votes && { printf '# JUDGE BUNDLE — ${ticker}\\n'; for f in 10-datapack.md 20-analyst-fund.md 20-analyst-tech.md 20-analyst-sent.md 20-analyst-meanrev.md 30-debate-w1-bull.md 30-debate-w1-bear.md 30-debate-w2-bull.md 30-debate-w2-bear.md 40-risk.md; do printf '\\n\\n===== %s =====\\n\\n' "$f"; cat "${dir}/$f" 2>/dev/null || printf '(missing %s)\\n' "$f"; done; } > ${dir}/45-judge-bundle.md`,
       { phase: 'Risk', model: 'haiku', effort: 'low', label: `bundle:${ticker}` })
     // Stage 5 — N=5 opus judges, byte-identical bundle
     const JUDGE = (i) => agent(
-      `You are ONE of 5 independent PM adjudicators (judge #${i}) for ${ticker}. Do NOT reference the other judges. Read the byte-identical case bundle at ${dir}/45-judge-bundle.md (data pack + analyst briefs + bull/bear debate + risk box + P7 track record).\nAdjudicate independently: weigh business quality, technicals, tape, the risk box, and the guarded track record. Reason in <= 200 words citing tagged facts; state moves in ATR14 units.\nThen use the Write tool to save your FULL response (reasoning + final verdict line) to ${dir}/50-votes/vote-${i}.md. The LAST non-empty line MUST be EXACTLY, nothing after it:\nVERDICT: <StrongSell|Sell|Hold|Buy|StrongBuy> | CONVICTION: <1-10> | WHY: <one sentence>\nReturn just that final VERDICT line.`,
+      `You are ONE of 5 independent PM adjudicators (judge #${i}) for ${ticker}. Do NOT reference the other judges. Read the byte-identical case bundle at ${dir}/45-judge-bundle.md (data pack + analyst briefs + bull/bear debate + risk box + P7 track record).\nAdjudicate independently: weigh business quality, technicals, tape, the risk box, and the guarded track record. Reason in <= 200 words citing tagged facts; state moves in ATR14 units.\nENTRY-PATH: state which confirmation path is closer to firing right now — left-side/counter-trend vs right-side/trend-following. Cite [P9.exhaustion_tally] VERBATIM for the exhaustion count when P9 is present; NEVER hand-count the 4 conditions and never cite ATR stretch as one of them. A clustered regime ([P9.cluster_status]="clustered") caps a counter-trend path at "pending", never "confirmed". Use "right-side confirmed" or "n/a - trend-only setup" when neither is near. If the pack has NO P9 facts (the batch data pack does not compute Stage 1c), reason from P1/P2 levels and write "P9 DATA GAP" inside the ENTRY-PATH text — never cite a [P9.*] tag absent from the pack.\nThen use the Write tool to save your FULL response (reasoning + final verdict line) to ${dir}/50-votes/vote-${i}.md. The LAST non-empty line MUST be EXACTLY this 4-field form, nothing after it. ensemble.py DISCARDS a vote missing ENTRY-PATH as malformed — a whole panel using the old 3-field form yields n_valid:0 and a NO-CALL:\nVERDICT: <StrongSell|Sell|Hold|Buy|StrongBuy> | CONVICTION: <1-10> | ENTRY-PATH: <free text, <=15 words> | WHY: <one sentence>\nReturn just that final VERDICT line.`,
       { phase: 'Judges', model: 'opus', effort: 'high', label: `judge${i}:${ticker}` })
     await parallel([1, 2, 3, 4, 5].map((i) => () => JUDGE(i)))
     // Stage 5b — tally via ensemble.py (writes 55-rating-block.md + 55-decision.json to disk)
@@ -160,8 +165,8 @@ async function runTicker(it) {
       }, label: `tally:${ticker}` })
     // Stage 6 — writer (opus: schema-v2 decision levels + concrete position)
     const writerReadList = isReplay
-      ? `10-datapack.md, 10-datapack.json, 20-analyst-fund.md, 20-analyst-tech.md, 20-analyst-sent.md, the four 30-debate-*.md, 40-risk.md, 55-rating-block.md, ${dir}/00-scope.json`
-      : `10-datapack.md, 10-datapack.json, 20-analyst-fund.md, 20-analyst-tech.md, 20-analyst-sent.md, the four 30-debate-*.md, 40-risk.md, 55-rating-block.md, 15-position.json`
+      ? `10-datapack.md, 10-datapack.json, 20-analyst-fund.md, 20-analyst-tech.md, 20-analyst-sent.md, 20-analyst-meanrev.md, the four 30-debate-*.md, 40-risk.md, 55-rating-block.md, ${dir}/00-scope.json`
+      : `10-datapack.md, 10-datapack.json, 20-analyst-fund.md, 20-analyst-tech.md, 20-analyst-sent.md, 20-analyst-meanrev.md, the four 30-debate-*.md, 40-risk.md, 55-rating-block.md, 15-position.json`
     const replayBanner = isReplay
       ? `\n\nHISTORICAL REPLAY BANNER — as the VERY FIRST lines of the report, before the executive summary, state plainly that this is a **Historical replay** and give all four fields: requested cutoff (${it.requested_cutoff}), effective market as-of (${it.effective_market_asof}), entry market as-of (${it.entry_market_asof}), generated_at (${scope.generatedAt}). Do NOT reference or read 15-position.json anywhere — it does not exist for a replay run. Do NOT include a "## Your position" section.`
       : ''

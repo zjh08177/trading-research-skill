@@ -20,6 +20,9 @@ handoff-*.md
 # Local usage telemetry sink (0600, uncommitted — privacy publication boundary)
 .local-usage/
 
+# Design docs w/ personal financial detail (sleeve size, 401k, tax) — vault only, never this PUBLIC repo
+docs/
+
 # Catch-all for option tokens accidentally bound as an output path. A `--help`
 # probe once became snapshot_holdings.py's output dir and wrote LIVE holdings to
 # ./--help/ here. The scripts now guard their argv; this is the second line of
@@ -33,3 +36,10 @@ handoff-*.md
 # cache. Neither belongs in a public repo.
 session-env/
 .serena/
+
+# Local run/analysis scratch — never in this PUBLIC repo
+.planning/
+artifacts/
+reliability/
+/cmp-dark.png
+/cmp-light.png
